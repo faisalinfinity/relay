@@ -1,0 +1,89 @@
+import { sql } from 'drizzle-orm';
+import {
+  check,
+  index,
+  integer,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
+
+const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
+
+export const ticketStatus = pgEnum('ticket_status', ['open', 'closed']);
+export const messageAuthorType = pgEnum('message_author_type', ['customer', 'agent']);
+
+export const agents = pgTable('agents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  createdAt: createdAt(),
+});
+
+export const tickets = pgTable(
+  'tickets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    number: integer('number').notNull().generatedAlwaysAsIdentity({ startWith: 1001 }),
+    subject: text('subject').notNull(),
+    status: ticketStatus('status').notNull().default('open'),
+    ownerId: uuid('owner_id').references(() => agents.id),
+    customerName: text('customer_name').notNull(),
+    customerEmail: text('customer_email').notNull(),
+    // Where the ticket came from, and that system's id for it. A resend of the same
+    // form submission hits the unique index below instead of creating a second ticket.
+    source: text('source').notNull().default('web_form'),
+    externalId: text('external_id'),
+    intakeHash: text('intake_hash'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    version: integer('version').notNull().default(1),
+  },
+  (t) => [
+    uniqueIndex('tickets_number_key').on(t.number),
+    uniqueIndex('tickets_source_external_id_key').on(t.source, t.externalId),
+    index('tickets_status_number_idx').on(t.status, t.number.desc()),
+    index('tickets_owner_id_idx').on(t.ownerId),
+    check('tickets_closed_at_check', sql`(${t.status} = 'closed') = (${t.closedAt} is not null)`),
+  ],
+);
+
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    authorType: messageAuthorType('author_type').notNull(),
+    agentId: uuid('agent_id').references(() => agents.id),
+    body: text('body').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('messages_ticket_id_created_at_idx').on(t.ticketId, t.createdAt),
+    check(
+      'messages_agent_author_check',
+      sql`(${t.authorType} = 'agent') = (${t.agentId} is not null)`,
+    ),
+  ],
+);
+
+export const articles = pgTable('articles', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  slug: text('slug').notNull().unique(),
+  title: text('title').notNull(),
+  category: text('category').notNull(),
+  body: text('body').notNull(),
+  contentHash: text('content_hash').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type AgentRow = typeof agents.$inferSelect;
+export type TicketRow = typeof tickets.$inferSelect;
+export type MessageRow = typeof messages.$inferSelect;

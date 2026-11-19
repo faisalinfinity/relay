@@ -7,10 +7,15 @@
     "node": ">=22.12"
   },
   "scripts": {
+    "dev": "pnpm --filter @relay/api dev",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "pnpm -r --if-present test",
+    "db:migrate": "pnpm --filter @relay/api db:migrate",
+    "db:seed": "pnpm --filter @relay/api db:seed",
+    "send:ticket": "pnpm --filter @relay/api send:ticket"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
