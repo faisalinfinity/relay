@@ -104,3 +104,24 @@ export function useReply(ticketId: string) {
     },
   });
 }
+
+/**
+ * The suggested reply for a ticket. Fetched once when the ticket opens; the API reuses its last
+ * draft until the inputs change, so this is cheap after the first time.
+ */
+export function useSuggestion(ticketId: string) {
+  const { api } = useLive();
+  const queryClient = useQueryClient();
+  const key = ['suggestion', ticketId] as const;
+  const query = useQuery({
+    queryKey: key,
+    queryFn: () => api.getSuggestion(ticketId),
+    // A model that's down won't be up a second later; the panel offers "Try again" instead
+    retry: false,
+  });
+  const regenerate = useMutation({
+    mutationFn: () => api.getSuggestion(ticketId, true),
+    onSuccess: (suggestion) => queryClient.setQueryData(key, suggestion),
+  });
+  return { query, regenerate };
+}

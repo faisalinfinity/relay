@@ -466,6 +466,76 @@ code {
   color: var(--muted);
 }
 
+/* ---------- suggested reply ---------- */
+
+.suggestion {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid #cdd7f8;
+  border-radius: var(--radius);
+  background: #f9faff;
+}
+.suggestion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.suggestion-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.suggestion-text {
+  padding: 0.75rem;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  background: var(--panel);
+}
+.suggestion-sources {
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.suggestion-sources a {
+  color: var(--accent);
+}
+.suggestion-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.suggestion-none {
+  font-weight: 600;
+}
+.suggestion-error p {
+  margin-bottom: 0.5rem;
+  color: var(--danger);
+}
+.retrieved {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.retrieved summary {
+  cursor: pointer;
+}
+.retrieved ol {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+}
+.retrieved .used,
+.retrieved .unused {
+  display: inline-block;
+  min-width: 4.5em;
+  font-weight: 600;
+}
+.retrieved .used {
+  color: var(--ok);
+}
+.retrieved .score {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- states ---------- */
 
 .state {

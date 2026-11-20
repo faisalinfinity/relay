@@ -9,7 +9,9 @@ import { agents, messages, tickets, type AgentRow, type TicketRow } from '../src
 import { AGENT_HEADER } from '../src/http/agent';
 import { RealtimeHub, type HubDeps, type RealtimeOptions } from '../src/realtime/hub';
 import { EventRelay } from '../src/realtime/relay';
+import { createSuggestionService, type SuggestionDeps } from '../src/suggestions/service';
 import { SIGNATURE_HEADER, signPayload } from '../src/webhooks/signature';
+import { answer, FakeChat, FakeEmbedder } from './fakes';
 import { TEST_DATABASE_URL } from './env';
 
 export const WEBHOOK_SECRET = 'test-webhook-secret-0123456789';
@@ -30,14 +32,24 @@ export interface TestServer {
 export async function startTestServer(
   realtimeOptions: Partial<RealtimeOptions> = {},
   hubDeps: Pick<HubDeps, 'readEvents'> = {},
+  ai: Partial<Omit<SuggestionDeps, 'db'>> = {},
 ): Promise<TestServer> {
   const logger = pino({ level: 'silent' });
   const { db, pool } = createDb(TEST_DATABASE_URL, { max: 30 });
   const relay = new EventRelay(db, TEST_DATABASE_URL, logger);
   await relay.start();
+  const suggestions = createSuggestionService({
+    db,
+    embedder: new FakeEmbedder(),
+    chat: new FakeChat(() => answer('Hi there! [1]', [1])),
+    minSimilarity: 0.3,
+    helpCenterUrl: 'https://help.test/articles',
+    ...ai,
+  });
   const app = createApp({
     db,
     webhook: { secret: WEBHOOK_SECRET, toleranceSeconds: WEBHOOK_TOLERANCE_SECONDS },
+    suggestions,
     logger,
   });
   const server = app.listen(0, '127.0.0.1');
@@ -67,7 +79,9 @@ export async function startTestServer(
  * counting: a running relay remembers the last seq it delivered, as it would in production.
  */
 export async function resetDb(db: Db) {
-  await db.execute(sql`truncate table ticket_events, messages, tickets, agents, articles`);
+  await db.execute(
+    sql`truncate table ticket_suggestions, ticket_events, messages, tickets, agents, article_chunks, articles`,
+  );
   await db.execute(sql`alter table tickets alter column number restart with 1001`);
 }
 

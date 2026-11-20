@@ -6,6 +6,8 @@ import { sql } from 'drizzle-orm';
 import { agentsRouter } from './agents/routes';
 import type { Db } from './db/client';
 import { loadAgent } from './http/agent';
+import { suggestionsRouter } from './suggestions/routes';
+import type { SuggestionService } from './suggestions/service';
 import { errorHandler, notFoundHandler } from './http/errors';
 import { ticketsRouter } from './tickets/routes';
 import { webhooksRouter, type WebhookOptions } from './webhooks/routes';
@@ -13,10 +15,11 @@ import { webhooksRouter, type WebhookOptions } from './webhooks/routes';
 export interface AppDeps {
   db: Db;
   webhook: WebhookOptions;
+  suggestions: SuggestionService;
   logger?: Logger;
 }
 
-export function createApp({ db, webhook, logger = pino() }: AppDeps): Express {
+export function createApp({ db, webhook, suggestions, logger = pino() }: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
 
@@ -44,6 +47,7 @@ export function createApp({ db, webhook, logger = pino() }: AppDeps): Express {
   app.use('/api', loadAgent(db));
   app.use('/api/agents', agentsRouter(db));
   app.use('/api/tickets', ticketsRouter(db));
+  app.use('/api/tickets', suggestionsRouter(suggestions));
 
   app.use(notFoundHandler);
   app.use(errorHandler);
