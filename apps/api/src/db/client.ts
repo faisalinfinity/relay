@@ -3,6 +3,8 @@ import pg from 'pg';
 import * as schema from './schema';
 
 export type Db = NodePgDatabase<typeof schema>;
+/** The handle a `db.transaction(async (tx) => ...)` callback receives */
+export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export function createDb(connectionString: string, options: { max?: number } = {}) {
   const pool = new pg.Pool({ connectionString, max: options.max ?? 10 });

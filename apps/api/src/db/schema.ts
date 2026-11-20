@@ -1,8 +1,11 @@
+import type { AgentRef, Message, TicketEventKind, TicketSummary } from '@relay/shared';
 import { sql } from 'drizzle-orm';
 import {
+  bigserial,
   check,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -83,6 +86,26 @@ export const articles = pgTable('articles', {
   contentHash: text('content_hash').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Append-only log of ticket changes, written in the same transaction as the change itself.
+ * Live updates are read from here, and a reconnecting browser replays from here.
+ */
+export const ticketEvents = pgTable(
+  'ticket_events',
+  {
+    seq: bigserial('seq', { mode: 'number' }).primaryKey(),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<TicketEventKind>().notNull(),
+    payload: jsonb('payload')
+      .$type<{ ticket: TicketSummary; message: Message | null; actor: AgentRef | null }>()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('ticket_events_created_at_idx').on(t.createdAt)],
+);
 
 export type AgentRow = typeof agents.$inferSelect;
 export type TicketRow = typeof tickets.$inferSelect;

@@ -7,6 +7,9 @@ import { createApp } from '../src/app';
 import { createDb, type Db } from '../src/db/client';
 import { agents, messages, tickets, type AgentRow, type TicketRow } from '../src/db/schema';
 import { AGENT_HEADER } from '../src/http/agent';
+import { RealtimeHub, type HubDeps, type RealtimeOptions } from '../src/realtime/hub';
+import { EventRelay } from '../src/realtime/relay';
+import { SIGNATURE_HEADER, signPayload } from '../src/webhooks/signature';
 import { TEST_DATABASE_URL } from './env';
 
 export const WEBHOOK_SECRET = 'test-webhook-secret-0123456789';
@@ -16,26 +19,40 @@ export interface TestServer {
   db: Db;
   pool: pg.Pool;
   baseUrl: string;
+  wsUrl: string;
   close(): Promise<void>;
 }
 
-/** A real HTTP server on a random port, so concurrent requests really are concurrent. */
-export async function startTestServer(): Promise<TestServer> {
+/**
+ * The whole API (HTTP, WebSocket hub, event relay) on a random port, so concurrent requests
+ * really are concurrent.
+ */
+export async function startTestServer(
+  realtimeOptions: Partial<RealtimeOptions> = {},
+  hubDeps: Pick<HubDeps, 'readEvents'> = {},
+): Promise<TestServer> {
+  const logger = pino({ level: 'silent' });
   const { db, pool } = createDb(TEST_DATABASE_URL, { max: 30 });
+  const relay = new EventRelay(db, TEST_DATABASE_URL, logger);
+  await relay.start();
   const app = createApp({
     db,
     webhook: { secret: WEBHOOK_SECRET, toleranceSeconds: WEBHOOK_TOLERANCE_SECONDS },
-    logger: pino({ level: 'silent' }),
+    logger,
   });
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  const hub = new RealtimeHub(server, { db, relay, logger, ...hubDeps }, realtimeOptions);
   const { port } = server.address() as AddressInfo;
 
   return {
     db,
     pool,
     baseUrl: `http://127.0.0.1:${port}`,
+    wsUrl: `ws://127.0.0.1:${port}/ws`,
     async close() {
+      hub.close();
+      await relay.stop();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         server.close((err) => (err ? reject(err) : resolve())),
@@ -45,10 +62,13 @@ export async function startTestServer(): Promise<TestServer> {
   };
 }
 
+/**
+ * Empties every table. Ticket numbers restart at 1001, but the event seq deliberately keeps
+ * counting: a running relay remembers the last seq it delivered, as it would in production.
+ */
 export async function resetDb(db: Db) {
-  await db.execute(
-    sql`truncate table messages, tickets, agents, articles restart identity cascade`,
-  );
+  await db.execute(sql`truncate table ticket_events, messages, tickets, agents, articles`);
+  await db.execute(sql`alter table tickets alter column number restart with 1001`);
 }
 
 export async function createAgent(db: Db, name: string): Promise<AgentRow> {
@@ -116,4 +136,22 @@ export async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5_000
     if (Date.now() > deadline) throw new Error(`condition not met within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+/** Posts a correctly signed submission to the intake webhook. */
+export async function sendSignedSubmission(
+  server: TestServer,
+  submission: {
+    submissionId: string;
+    name: string;
+    email: string;
+    subject: string;
+    message: string;
+  },
+): Promise<ApiResult> {
+  const rawBody = JSON.stringify(submission);
+  return call(server, 'POST', '/webhooks/tickets', {
+    rawBody,
+    headers: { [SIGNATURE_HEADER]: signPayload(WEBHOOK_SECRET, rawBody) },
+  });
 }

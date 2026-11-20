@@ -58,9 +58,34 @@ _TBD_
   so the signature is checked over the exact bytes received.
 - **TypeScript pinned to 6.0.** TS 7 is `latest` on npm, but typescript-eslint supports `<6.1`.
 
+### Part 2: the live inbox
+
+- **WebSocket over SSE**, because presence is browser-to-server and the socket closing _is_ the "they left"
+  signal. With SSE, typing would be extra POSTs, and I'd need to tie them back to a stream.
+- **Events in the same transaction as the change**, plus `pg_notify`, instead of emitting from the request
+  handler. An event exists if and only if the change committed, and LISTEN works across API instances
+  without adding Redis.
+- **Ordering the log.** A sequence hands out numbers at INSERT time, not commit time. Two transactions can
+  commit out of order, and a client resuming "after 11" would miss 10 forever. An advisory lock around the
+  event write makes seq order equal commit order. It serialises event writes, which is the trade-off for
+  DESIGN.md.
+- **Version, not arrival order, decides what the screen shows.** I first thought about patching each
+  cached list on every event. I went with one store of tickets where the highest `version` wins, and
+  queues derived from it. A slow REST response arriving after a live event can't bring back an old owner.
+- **Bug found by mutation testing:** my first "events arrive during catch-up" test passed even with the
+  catch-up buffer deleted. The concurrent submissions just happened to finish after the replay. I made it
+  deterministic by injecting the replay read, so events are committed right before and right after it.
+  The test now fails for each of three ways of breaking the buffer.
+- **Second bug, also from a test:** after `resetDb`, the event log is empty and reports head 0, and the
+  next event has a high seq, so a reconnect looked like a pruned gap and forced a full refetch. Production
+  would hit the same after pruning a quiet log. Pruning now always keeps the newest event.
+- **Sleep detection** uses a timer that notices it fired late, plus a server heartbeat. A sleeping
+  laptop's socket can look open for minutes otherwise.
+
 ## Time log
 
-| Part  | Time | Notes |
-| ----- | ---- | ----- |
-| Setup |      |       |
-| 1 API |      |       |
+| Part         | Time | Notes |
+| ------------ | ---- | ----- |
+| Setup        |      |       |
+| 1 API        |      |       |
+| 2 Live inbox |      |       |
