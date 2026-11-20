@@ -1,24 +1,20 @@
 import type {
   AgentRef,
   ClaimConflictDetails,
-  Message,
   ReplyResult,
   TicketDetail,
+  TicketEventKind,
   TicketPage,
   TicketStatus,
   TicketSummary,
 } from '@relay/shared';
 import { and, asc, desc, eq, isNull, lt, sql, type SQL } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import type { Db } from '../db/client';
-import {
-  agents,
-  messages,
-  tickets,
-  type AgentRow,
-  type MessageRow,
-  type TicketRow,
-} from '../db/schema';
+import { agents, messages, tickets, type AgentRow } from '../db/schema';
 import { AppError } from '../http/errors';
+import { recordEvent } from '../realtime/events';
+import { toAgentRef, toMessage, toSummary } from './mapping';
 
 const now = sql`now()`;
 const nextVersion = sql`${tickets.version} + 1`;
@@ -92,12 +88,13 @@ export async function claimTicket(
 ): Promise<TicketSummary> {
   // A second attempt only happens if the ticket was released between our UPDATE and the read.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const [claimed] = await db
-      .update(tickets)
-      .set({ ownerId: agent.id, claimedAt: now, updatedAt: now, version: nextVersion })
-      .where(and(eq(tickets.id, ticketId), eq(tickets.status, 'open'), isNull(tickets.ownerId)))
-      .returning();
-    if (claimed) return toSummary({ ticket: claimed, ownerName: agent.name });
+    const claimed = await transition(db, agent, {
+      kind: 'ticket.claimed',
+      set: { ownerId: agent.id, claimedAt: now },
+      where: and(eq(tickets.id, ticketId), eq(tickets.status, 'open'), isNull(tickets.ownerId)),
+      ownerName: agent.name,
+    });
+    if (claimed) return claimed;
 
     // Nothing was updated. Find out why, so the caller gets an answer they can act on.
     const current = await findTicket(db, ticketId);
@@ -114,12 +111,13 @@ export async function releaseTicket(
   ticketId: string,
   agent: AgentRow,
 ): Promise<TicketSummary> {
-  const [released] = await db
-    .update(tickets)
-    .set({ ownerId: null, claimedAt: null, updatedAt: now, version: nextVersion })
-    .where(ownedOpenTicket(ticketId, agent))
-    .returning();
-  if (released) return toSummary({ ticket: released, ownerName: null });
+  const released = await transition(db, agent, {
+    kind: 'ticket.released',
+    set: { ownerId: null, claimedAt: null },
+    where: ownedOpenTicket(ticketId, agent),
+    ownerName: null,
+  });
+  if (released) return released;
   throw ownershipError(await findTicket(db, ticketId), ticketId, agent, 'release');
 }
 
@@ -128,12 +126,13 @@ export async function closeTicket(
   ticketId: string,
   agent: AgentRow,
 ): Promise<TicketSummary> {
-  const [closed] = await db
-    .update(tickets)
-    .set({ status: 'closed', closedAt: now, updatedAt: now, version: nextVersion })
-    .where(ownedOpenTicket(ticketId, agent))
-    .returning();
-  if (closed) return toSummary({ ticket: closed, ownerName: agent.name });
+  const closed = await transition(db, agent, {
+    kind: 'ticket.closed',
+    set: { status: 'closed', closedAt: now },
+    where: ownedOpenTicket(ticketId, agent),
+    ownerName: agent.name,
+  });
+  if (closed) return closed;
   throw ownershipError(await findTicket(db, ticketId), ticketId, agent, 'close');
 }
 
@@ -166,10 +165,40 @@ export async function replyToTicket(
       .returning();
     if (!message || !ticket) throw new Error(`reply to ${ticketId} wrote no rows`);
 
-    return {
+    const result = {
       message: toMessage(message, toAgentRef(agent)),
       ticket: toSummary({ ticket, ownerName: agent.name }),
     };
+    await recordEvent(tx, { kind: 'ticket.replied', ...result, actor: toAgentRef(agent) });
+    return result;
+  });
+}
+
+/**
+ * Runs a conditional UPDATE and, when it matches, records the matching event in the same
+ * transaction, so an event exists if and only if the change committed.
+ * Returns undefined when the WHERE matched nothing.
+ */
+async function transition(
+  db: Db,
+  agent: AgentRow,
+  change: {
+    kind: TicketEventKind;
+    set: PgUpdateSetSource<typeof tickets>;
+    where: SQL | undefined;
+    ownerName: string | null;
+  },
+): Promise<TicketSummary | undefined> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(tickets)
+      .set({ ...change.set, updatedAt: now, version: nextVersion })
+      .where(change.where)
+      .returning();
+    if (!row) return undefined;
+    const ticket = toSummary({ ticket: row, ownerName: change.ownerName });
+    await recordEvent(tx, { kind: change.kind, ticket, actor: toAgentRef(agent) });
+    return ticket;
   });
 }
 
@@ -192,43 +221,6 @@ async function findTicket(db: Db, ticketId: string): Promise<TicketSummary | und
 function ownedOpenTicket(ticketId: string, agent: AgentRow) {
   return and(eq(tickets.id, ticketId), eq(tickets.status, 'open'), eq(tickets.ownerId, agent.id));
 }
-
-// ---------- mapping rows to the wire format ----------
-
-function toSummary({
-  ticket,
-  ownerName,
-}: {
-  ticket: TicketRow;
-  ownerName: string | null;
-}): TicketSummary {
-  return {
-    id: ticket.id,
-    number: ticket.number,
-    subject: ticket.subject,
-    status: ticket.status,
-    owner: ticket.ownerId && ownerName !== null ? { id: ticket.ownerId, name: ownerName } : null,
-    customer: { name: ticket.customerName, email: ticket.customerEmail },
-    claimedAt: ticket.claimedAt?.toISOString() ?? null,
-    closedAt: ticket.closedAt?.toISOString() ?? null,
-    createdAt: ticket.createdAt.toISOString(),
-    updatedAt: ticket.updatedAt.toISOString(),
-    version: ticket.version,
-  };
-}
-
-function toMessage(row: MessageRow, agent: AgentRef | null): Message {
-  return {
-    id: row.id,
-    ticketId: row.ticketId,
-    authorType: row.authorType,
-    agent,
-    body: row.body,
-    createdAt: row.createdAt.toISOString(),
-  };
-}
-
-const toAgentRef = (agent: AgentRow): AgentRef => ({ id: agent.id, name: agent.name });
 
 // ---------- errors an agent can act on ----------
 

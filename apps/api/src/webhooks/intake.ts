@@ -4,6 +4,8 @@ import { and, eq } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { messages, tickets } from '../db/schema';
 import { AppError } from '../http/errors';
+import { recordEvent } from '../realtime/events';
+import { toMessage, toSummary } from '../tickets/mapping';
 
 const SOURCE = 'web_form';
 
@@ -33,12 +35,18 @@ export async function ingestSubmission(
         intakeHash,
       })
       .onConflictDoNothing({ target: [tickets.source, tickets.externalId] })
-      .returning({ id: tickets.id, number: tickets.number });
+      .returning();
 
     if (created) {
-      await tx
+      const [message] = await tx
         .insert(messages)
-        .values({ ticketId: created.id, authorType: 'customer', body: payload.message });
+        .values({ ticketId: created.id, authorType: 'customer', body: payload.message })
+        .returning();
+      await recordEvent(tx, {
+        kind: 'ticket.created',
+        ticket: toSummary({ ticket: created, ownerName: null }),
+        message: toMessage(message!, null),
+      });
       return { ticketId: created.id, number: created.number, duplicate: false };
     }
 

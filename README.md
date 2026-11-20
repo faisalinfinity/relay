@@ -7,14 +7,15 @@ centre articles.
 The product being supported is **Slotwise**, an invented booking and scheduling tool for small studios.
 Its help centre (25 articles) lives in [`content/articles`](content/articles).
 
-> **Status:** the API, claim rule, intake webhook, seed data, tests and CI are done. The live React inbox,
-> suggested replies and the one-command Docker setup are next.
+> **Status:** the API, the live inbox, seed data, tests and CI are done. Suggested replies and the
+> one-command Docker setup are next.
 
 ## Stack
 
 - TypeScript everywhere, pnpm workspaces
-- **API** ([`apps/api`](apps/api)): Node 22, Express 5, Drizzle ORM, Zod, pino
-- **Shared contracts** ([`packages/shared`](packages/shared)): Zod schemas and types used by the API and, later, the UI
+- **API** ([`apps/api`](apps/api)): Node 22, Express 5, Drizzle ORM, Zod, pino, `ws` for WebSockets
+- **UI** ([`apps/web`](apps/web)): React 19, Vite, TanStack Query, plain CSS (no component library)
+- **Shared contracts** ([`packages/shared`](packages/shared)): Zod schemas and types used by both sides
 - **Database:** PostgreSQL 17 with pgvector, via Docker Compose
 - **Tests:** Vitest against a real Postgres
 
@@ -27,8 +28,11 @@ docker compose up -d db   # Postgres on localhost:5433
 pnpm install
 pnpm db:migrate
 pnpm db:seed              # 4 agents, 30 tickets, 25 help articles
-pnpm dev                  # API on http://localhost:4000
+pnpm dev                  # UI on http://localhost:5173, API on http://localhost:4000
 ```
+
+Open <http://localhost:5173> in two browser windows and pick a different agent in each. The agent is
+remembered per tab, so a reload keeps it.
 
 No `.env` file is needed for local development: every setting has a development default. See
 [`.env.example`](.env.example) to override them. Running `pnpm db:seed` again resets the tickets and agents.
@@ -43,7 +47,8 @@ pnpm test
 ```
 
 The tests create and migrate their own `relay_test` database on the same server, so they never touch your
-dev data. `pnpm typecheck`, `pnpm lint` and `pnpm format:check` run the other CI steps.
+dev data. API tests run over real HTTP and real WebSockets against Postgres. UI tests cover the logic the
+live screen depends on (the ticket store, queue filtering, reconnect behaviour) without a browser. `pnpm typecheck`, `pnpm lint` and `pnpm format:check` run the other CI steps.
 
 The CI pipeline is [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It runs the same commands on
 every push, against a pgvector Postgres service container.
@@ -62,6 +67,83 @@ pnpm send:ticket --subject "SW-1042 again" --message "Calendar stopped syncing"
 The script signs the body with the same `WEBHOOK_SECRET` the API uses. See
 [`apps/api/scripts/send-test-ticket.ts`](apps/api/scripts/send-test-ticket.ts).
 
+## The live inbox
+
+### WebSocket, not server-sent events
+
+Both would carry server-to-browser updates. I picked WebSocket because presence needs the browser to talk
+back: "I have ticket #1030 open", "I'm typing". With SSE those would be separate POST requests, and the
+server would have to tie a POST to a stream to know whose presence ended when a tab closed. With one
+socket, the socket _is_ the presence. When it closes (tab closed, network gone, missed ping) that agent's
+presence clears. SSE's built-in reconnect with `Last-Event-ID` is nice, but resuming is a few lines either
+way (below).
+
+### How a change reaches every browser
+
+1. Every change (new ticket, claim, release, reply, close) writes a row to `ticket_events` **in the same
+   transaction** as the change itself, then calls `pg_notify`. The event exists only if the change
+   committed. Each event carries a global `seq` and the full ticket after the change.
+2. Each API instance `LISTEN`s, reads the new rows in `seq` order and pushes them to its sockets
+   ([`realtime/relay.ts`](apps/api/src/realtime/relay.ts),
+   [`realtime/hub.ts`](apps/api/src/realtime/hub.ts)). Going through Postgres rather than an in-process
+   emitter means this already works with several API instances.
+3. The browser keeps one copy of each ticket and always keeps the **higher `version`**
+   ([`live/store.ts`](apps/web/src/live/store.ts)). REST responses, live events, replays and optimistic
+   updates all go through that rule, so arrival order doesn't matter. A slow REST response can't put back
+   an owner that a live event already replaced. Queues are derived from that store, so a new ticket
+   appears, a claimed one shows its owner (and leaves _Unassigned_), and a closed one leaves _All open_.
+
+### Reconnecting after the laptop sleeps
+
+- **Noticing.** A sleeping laptop's socket can look open for minutes. The browser runs a 5-second watchdog.
+  If a tick arrives much later than scheduled, the machine was asleep. If no heartbeat has come for 40s
+  (the server sends one every 15s), the link is dead. Either way it reconnects at once, and it also
+  reconnects on the browser's `online` event. Otherwise it retries with jittered exponential backoff. The
+  server pings every 15s and drops sockets that don't answer, which clears their presence.
+- **Catching up.** The browser remembers the last `seq` it applied and sends it in its `hello`. If every
+  event after that is still in the log, the server replays exactly those, in order, then says
+  `ready: resumed`. Live events that arrive during the replay are held back and de-duplicated, so nothing
+  is lost or shown twice. If the gap can't be replayed (events older than 24h are pruned, or there are
+  more than 1,000), the server says `ready: snapshot` and the browser refetches what's on screen.
+- **No stale owners.** Until the server says `ready`, a banner says the screen is catching up and owner
+  badges are dimmed. A replayed claim carries the new owner and a higher version, so it replaces the old
+  one. A snapshot refetch also drops tickets it no longer returns.
+- **Event order.** Sequence numbers are handed out at INSERT time, not commit time, so two transactions
+  could commit out of `seq` order and a resuming browser could skip one. Event writes take a transaction
+  advisory lock, which makes `seq` order equal commit order
+  ([`realtime/events.ts`](apps/api/src/realtime/events.ts)).
+
+### Presence and typing
+
+Opening a ticket sends `viewing`. Typing sends `typing: true` at most every 2 seconds and `false` after 3
+seconds of quiet. The server clears typing on its own after 6 seconds, in case the "stop" never arrives.
+Agents see avatars on queue rows and a line on the ticket ("Ben Okafor is typing a reply…"). An agent with
+two tabs open shows once. Presence lives in each API instance's memory; DESIGN.md covers several instances.
+
+### Claim is optimistic
+
+Clicking **Claim** shows you as owner immediately. On a **409** the UI rolls back to the owner the API names
+in the error, not to "unassigned", and shows the API's message ("Ben Okafor claimed ticket #1030 just now…").
+If the other agent's claim event already arrived, the rollback leaves it alone.
+
+### States and keyboard
+
+Every view has loading, empty and error states (with retry). The connection state is always visible in the
+header. Errors from actions show the API's message inline.
+
+| Key                  | Does                               |
+| -------------------- | ---------------------------------- |
+| `J` / `↓`, `K` / `↑` | Next / previous ticket             |
+| `Enter`              | Open the focused ticket            |
+| `C`                  | Claim the open ticket              |
+| `R`                  | Write a reply                      |
+| `Ctrl`/`⌘` + `Enter` | Send the reply                     |
+| `Esc`                | Back to the queue                  |
+| `1`–`4`              | All open, Unassigned, Mine, Closed |
+| `?`                  | Show shortcuts                     |
+
+Everything is also reachable with Tab, with visible focus rings and a skip link.
+
 ## API
 
 There is no login. The acting agent is named by an `X-Agent-Id` header (an agent id from
@@ -78,6 +160,7 @@ There is no login. The acting agent is named by an `X-Agent-Id` header (an agent
 | `POST` | `/api/tickets/:id/close`   | Owner closes the ticket                                                                                                            |
 | `POST` | `/webhooks/tickets`        | Signed intake from the website form                                                                                                |
 | `GET`  | `/health`                  | Liveness, including a database round trip                                                                                          |
+| `GET`  | `/ws`                      | WebSocket for live events and presence (protocol in [`packages/shared/src/realtime.ts`](packages/shared/src/realtime.ts))          |
 
 Lists return `{ "data": [...], "nextCursor": "1017" | null }`. Pass `nextCursor` back as `cursor` for the
 next page. Pagination is keyset on the ticket number rather than OFFSET, so tickets arriving while you page
@@ -151,6 +234,9 @@ length of its transaction, so the owner can't change between the check and the i
 - Ticket status is `open` or `closed`. "Claimed" is not a status; it is an open ticket with an owner.
   Closed tickets keep their owner, which records who closed them.
 - A double click on claim by the current owner is a success, not a conflict.
+- Every agent can see every ticket, so live events go to every connected agent.
+- If you re-seed while the app is open, reload the page: a re-seed rewrites the data underneath the
+  event log rather than through it.
 
 ## Layout
 
@@ -158,13 +244,18 @@ length of its transaction, so the owner can't change between the check and the i
 apps/api/src
   app.ts              Express app (createApp is shared by the server and the tests)
   tickets/            list / read / claim / release / reply / close
+  realtime/           event log, LISTEN/NOTIFY relay, WebSocket hub (live events, catch-up, presence)
   webhooks/           signature check and idempotent intake
   articles/sync.ts    loads content/articles into the database, changed files only
   db/                 Drizzle schema and client; SQL migrations in apps/api/drizzle
   http/               error shape, validation, X-Agent-Id
 apps/api/seed         seed agents and tickets
 apps/api/scripts      migrate, seed, send-test-ticket
-apps/api/test         Vitest suites (real HTTP, real Postgres)
-packages/shared       request/response schemas and error codes
+apps/api/test         Vitest suites (real HTTP, real WebSockets, real Postgres)
+apps/web/src
+  live/               socket (reconnects), ticket store (newest version wins), queue views, hooks
+  components/         inbox layout, queue, ticket view, composer, status pieces
+apps/web/test         unit tests for the store, queue filtering and reconnect logic
+packages/shared       request/response schemas, WebSocket protocol, error codes
 content/articles      the Slotwise help centre
 ```
