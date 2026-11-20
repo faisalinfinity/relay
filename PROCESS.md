@@ -82,6 +82,32 @@ _TBD_
 - **Sleep detection** uses a timer that notices it fired late, plus a server heartbeat. A sleeping
   laptop's socket can look open for minutes otherwise.
 
+### Part 3: suggested replies
+
+- **Models:** the brief allows any model, so I picked Ollama to keep "which keys do we need" at none.
+  `nomic-embed-text` for embeddings, `qwen2.5:3b` for drafting. Claude is optional for drafting when a
+  key is set. Both sit behind two small interfaces (`Embedder`, `ChatModel`), so the tests use fakes.
+- **One chunk per `##` section, with title and heading in front.** The articles are written as one
+  answer per section, so a section is the natural unit. A whole article blurs several answers into one
+  vector; single sentences lose the context ("click Reconnect" without "SW-1042").
+- **Incremental ingest by hashing what's embedded**, not the article file, so editing one section
+  re-embeds one chunk. The model name is part of the hash, so switching models re-embeds everything.
+- **The cut-off.** I expected a single similarity threshold to separate covered from uncovered
+  questions. The eval showed the ranges overlap (0.692 lowest covered, 0.737 highest uncovered).
+  "Bitcoin deposits" really is close to the deposits article. A relative score (best chunk vs. the
+  average chunk) overlapped too. So the cut-off only screens out the clearly unrelated (0.65), and the
+  model decides whether an on-topic excerpt actually answers the question.
+- **The change the number drove:** end to end, the local model first scored 9/18. It said "not
+  answerable" to 7 questions whose answer was in front of it. Asking it first to name the excerpt that
+  answers the question took it to 15–16/18.
+- **What didn't work:** I tried to make it quote the answering sentence so code could check the quote
+  against the excerpt. qwen2.5:3b wrote the excerpt number instead of a quote every time, even with an
+  explicit example and with a separate field for the number (6/18 both times). The quote check would be
+  the stronger guard; it needs a bigger model.
+- **Error codes:** probing tickets that contain only a code ("SW-1043") found the right article first
+  in 4 of 6, mostly because codes appear in section headings. "What is SW-5002" ranked the error-code
+  reference first. Not enough to justify keyword search yet; it's the first thing I'd add at scale.
+
 ## Time log
 
 | Part         | Time | Notes |

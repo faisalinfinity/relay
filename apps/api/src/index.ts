@@ -1,10 +1,12 @@
 import { pino } from 'pino';
+import { createModels } from './ai';
 import { createApp } from './app';
 import { loadConfig } from './config';
 import { createDb } from './db/client';
 import { pruneEvents } from './realtime/events';
 import { RealtimeHub } from './realtime/hub';
 import { EventRelay } from './realtime/relay';
+import { createSuggestionService } from './suggestions/service';
 
 /** Events older than this are deleted; a browser away for longer refetches instead of replaying. */
 const EVENT_RETENTION_HOURS = 24;
@@ -16,7 +18,17 @@ const { db, pool } = createDb(config.databaseUrl);
 const relay = new EventRelay(db, config.databaseUrl, logger);
 await relay.start();
 
-const app = createApp({ db, webhook: config.webhook, logger });
+const { embedder, chat } = createModels(config.ai);
+logger.info(`Suggested replies: embeddings by ${embedder.model}, drafts by ${chat.model}`);
+const suggestions = createSuggestionService({
+  db,
+  embedder,
+  chat,
+  minSimilarity: config.ai.minSimilarity,
+  helpCenterUrl: config.ai.helpCenterUrl,
+});
+
+const app = createApp({ db, webhook: config.webhook, suggestions, logger });
 
 const server = app.listen(config.port, (error) => {
   if (error) {

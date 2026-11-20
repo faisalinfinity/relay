@@ -4,14 +4,15 @@ import { isPlainKey, isTypingTarget } from '../lib/keys';
 import { fullDate } from '../lib/time';
 import { useLive } from '../live/LiveProvider';
 import { useTicket, useTicketAction } from '../live/hooks';
-import { Composer } from './Composer';
+import { Composer, type ComposerHandle } from './Composer';
+import { SuggestionPanel } from './SuggestionPanel';
 import { Avatars, ErrorState, Spinner } from './Status';
 
 export function TicketView({ ticketId }: { ticketId: string }) {
   const { me, presence, setViewing } = useLive();
   const { query, ticket, messages } = useTicket(ticketId);
   const action = useTicketAction(ticketId);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerHandle>(null);
 
   // Tell the other agents this ticket is open here. Leaving it (or closing the tab) clears it.
   useEffect(() => {
@@ -150,6 +151,14 @@ export function TicketView({ ticketId }: { ticketId: string }) {
           </ol>
         )}
       </section>
+
+      {ticket.status === 'open' && (
+        <SuggestionPanel
+          ticketId={ticket.id}
+          canInsert={mine && !claiming}
+          onInsert={(text) => composerRef.current?.insert(text)}
+        />
+      )}
 
       {ticket.status === 'closed' ? (
         <p className="composer-note">This ticket is closed.</p>

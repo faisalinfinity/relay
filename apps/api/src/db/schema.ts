@@ -1,4 +1,4 @@
-import type { AgentRef, Message, TicketEventKind, TicketSummary } from '@relay/shared';
+import type { AgentRef, Message, Suggestion, TicketEventKind, TicketSummary } from '@relay/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigserial,
@@ -12,6 +12,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  vector,
 } from 'drizzle-orm/pg-core';
 
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -106,6 +107,48 @@ export const ticketEvents = pgTable(
   },
   (t) => [index('ticket_events_created_at_idx').on(t.createdAt)],
 );
+
+/** nomic-embed-text produces 768 numbers per text. A model with another size needs a migration. */
+export const EMBEDDING_DIMENSIONS = 768;
+
+/**
+ * Help articles split into sections, each with its embedding. `content_hash` covers exactly the
+ * text that was embedded plus the model name, so re-ingesting only embeds chunks whose hash is new.
+ */
+export const articleChunks = pgTable(
+  'article_chunks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    articleId: uuid('article_id')
+      .notNull()
+      .references(() => articles.id, { onDelete: 'cascade' }),
+    ordinal: integer('ordinal').notNull(),
+    heading: text('heading').notNull(),
+    content: text('content').notNull(),
+    contentHash: text('content_hash').notNull(),
+    embeddingModel: text('embedding_model').notNull(),
+    embedding: vector('embedding', { dimensions: EMBEDDING_DIMENSIONS }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('article_chunks_article_hash_key').on(t.articleId, t.contentHash),
+    // Approximate nearest-neighbour index for cosine distance (the <=> operator)
+    index('article_chunks_embedding_idx').using('hnsw', t.embedding.op('vector_cosine_ops')),
+  ],
+);
+
+/**
+ * The last suggestion drafted for each ticket. Drafting takes seconds, so it's reused until its
+ * inputs change: the ticket's question, the articles retrieved for it, or the models.
+ */
+export const ticketSuggestions = pgTable('ticket_suggestions', {
+  ticketId: uuid('ticket_id')
+    .primaryKey()
+    .references(() => tickets.id, { onDelete: 'cascade' }),
+  inputHash: text('input_hash').notNull(),
+  suggestion: jsonb('suggestion').$type<Suggestion>().notNull(),
+  createdAt: createdAt(),
+});
 
 export type AgentRow = typeof agents.$inferSelect;
 export type TicketRow = typeof tickets.$inferSelect;

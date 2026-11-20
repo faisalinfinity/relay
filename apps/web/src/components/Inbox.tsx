@@ -138,6 +138,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Enter', 'Open the focused ticket'],
   ['C', 'Claim the open ticket'],
   ['R', 'Write a reply'],
+  ['I', 'Insert the suggested reply'],
   ['Ctrl/⌘ + Enter', 'Send the reply'],
   ['Esc', 'Back to the queue'],
   ['1 – 4', 'All open · Unassigned · Mine · Closed'],

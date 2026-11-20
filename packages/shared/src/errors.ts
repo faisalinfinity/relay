@@ -21,6 +21,10 @@ export const ERROR_STATUS = {
   PAYLOAD_TOO_LARGE: 413,
   UNSUPPORTED_MEDIA_TYPE: 415,
   INTERNAL: 500,
+  /** the chat or embedding model answered with something unusable */
+  SUGGESTION_FAILED: 502,
+  /** the model server (Ollama) can't be reached or isn't ready */
+  SUGGESTIONS_UNAVAILABLE: 503,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

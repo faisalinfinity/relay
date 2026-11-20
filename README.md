@@ -7,8 +7,8 @@ centre articles.
 The product being supported is **Slotwise**, an invented booking and scheduling tool for small studios.
 Its help centre (25 articles) lives in [`content/articles`](content/articles).
 
-> **Status:** the API, the live inbox, seed data, tests and CI are done. Suggested replies and the
-> one-command Docker setup are next.
+> **Status:** the API, the live inbox, suggested replies, seed data, tests and CI are done. The
+> one-command Docker setup is next.
 
 ## Stack
 
@@ -17,17 +17,21 @@ Its help centre (25 articles) lives in [`content/articles`](content/articles).
 - **UI** ([`apps/web`](apps/web)): React 19, Vite, TanStack Query, plain CSS (no component library)
 - **Shared contracts** ([`packages/shared`](packages/shared)): Zod schemas and types used by both sides
 - **Database:** PostgreSQL 17 with pgvector, via Docker Compose
+- **Models:** Ollama with `nomic-embed-text` (embeddings) and `qwen2.5:3b` (drafting); optionally Claude for drafting
 - **Tests:** Vitest against a real Postgres
 
 ## Running it
 
-You need Node 22, pnpm 9 (`corepack enable` gives you the right version) and Docker.
+You need Node 22, pnpm 9 (`corepack enable` gives you the right version), Docker, and
+[Ollama](https://ollama.com) for suggested replies.
 
 ```bash
 docker compose up -d db   # Postgres on localhost:5433
 pnpm install
 pnpm db:migrate
 pnpm db:seed              # 4 agents, 30 tickets, 25 help articles
+pnpm models:pull          # nomic-embed-text + qwen2.5:3b into Ollama (~2.3 GB, first time only)
+pnpm ingest               # chunk and embed the help articles into pgvector
 pnpm dev                  # UI on http://localhost:5173, API on http://localhost:4000
 ```
 
@@ -37,7 +41,10 @@ remembered per tab, so a reload keeps it.
 No `.env` file is needed for local development: every setting has a development default. See
 [`.env.example`](.env.example) to override them. Running `pnpm db:seed` again resets the tickets and agents.
 
-**Model keys:** none needed yet.
+**Model keys: none required.** Embeddings and drafting both run locally on Ollama. Optionally, set
+`ANTHROPIC_API_KEY` in `.env` and Claude (`claude-opus-5-5`) drafts the replies instead, with better
+judgement about what the articles do and don't answer. Embeddings stay on Ollama either way, because
+Anthropic has no embeddings API.
 
 ## Tests
 
@@ -144,23 +151,105 @@ header. Errors from actions show the API's message inline.
 
 Everything is also reachable with Tab, with visible focus rings and a skip link.
 
+## Suggested replies
+
+When an agent opens a ticket, the panel under the conversation shows a draft reply and the articles it
+came from. **Insert into reply** (or `I`) puts it in the reply box, where the agent can edit it. Nothing
+reaches the customer until they press Send. Only the ticket's owner can insert, because only the owner
+can reply.
+
+### Pipeline
+
+1. **Ingest** (`pnpm ingest`, [`retrieval/ingest.ts`](apps/api/src/retrieval/ingest.ts)). Each article
+   is split into one chunk per `##` section, and each chunk is embedded with its article title and
+   heading in front ("Calendar sync troubleshooting / Error SW-1042 / …"). The vectors go into pgvector
+   with an HNSW index. A chunk is identified by a hash of exactly what was embedded plus the model name.
+   Re-running after editing one section embeds only that chunk; a new embedding model re-embeds
+   everything. The 25 articles make 122 chunks, embedded in about 3 seconds.
+2. **Embedding step** ([`retrieve`](apps/api/src/retrieval/search.ts)). The ticket's subject and customer
+   messages are embedded, and the 6 nearest chunks are fetched by cosine distance. Chunks with similarity
+   below the cut-off are dropped.
+3. **Generation step** ([`draftReply`](apps/api/src/suggestions/draft.ts)). Up to 4 relevant chunks go
+   to the chat model as numbered excerpts. The model must answer in a JSON schema: `answeredBy` (the
+   excerpt that answers the main question, or 0), `reply`, and `citations`. The code checks the answer.
+   `answeredBy` must name an excerpt the model was actually given, and citations of excerpts it wasn't
+   given are dropped. The `[n]` markers are then replaced with links to the cited articles at the end of
+   the reply.
+
+The two steps are separate functions with separate tests, and both run on fakes in CI (no model server).
+Drafts are cached per ticket until the question, the retrieved chunks or the models change. Regenerate
+asks for a new one.
+
+### When no article covers it
+
+The panel says "No help article covers this" in three cases, and shows which:
+
+- **Nothing clears the similarity cut-off.** The chat model is never asked.
+- **The model says none of the excerpts answers the question** (`answeredBy: 0`).
+- **The model names an excerpt it wasn't given.** The draft is discarded.
+
+Every suggestion also lists the chunks the search found, with their similarity, and whether each was used.
+
+### How I chose the cut-off
+
+I ran [`pnpm eval`](apps/api/scripts/eval.ts) over 12 answerable questions and 6 that no article covers
+([`eval/questions.ts`](apps/api/eval/questions.ts)), and looked at the best similarity each one gets:
+
+|                 | lowest | highest |
+| --------------- | ------ | ------- |
+| answerable (12) | 0.692  | 0.862   |
+| not covered (6) | 0.594  | 0.737   |
+
+The ranges overlap. "Can clients pay deposits in Bitcoin?" scores 0.724 against the deposits article: it
+**is** about deposits, the article just doesn't answer it. No similarity cut-off can tell "on topic" from
+"answered". I also tried measuring how far the best chunk stands out from the average chunk, and that
+overlaps too. So the cut-off has one job: drop clearly unrelated tickets without losing any answerable
+one. **0.65** is the highest round value below the lowest answerable score (0.692), and it rules out the
+HIPAA question outright. Deciding whether an on-topic excerpt actually answers the question is left to
+the model, which reads it.
+
+### Evaluation
+
+`pnpm eval` prints a table and the hit rate. `pnpm eval --generate` also drafts a reply for all 18
+questions with the configured chat model.
+
+- **Retrieval:** the expected article is in the top 3 for **12/12 (100%)**, first for 10/12, MRR 0.90.
+  Both misses are near-misses. "Receptionist access" ranked the refunds article first, because the
+  question mentions refunds. "SW-6029" ranked the error-code reference first, because it lists every
+  code.
+- **End to end with qwen2.5:3b:** **15/18**. All 12 answerable questions get a draft citing the expected
+  article. 3 of the 6 uncovered questions correctly get "no article covers this"; Zoom links, gift
+  cards and crypto still got drafts.
+
+**The change I made because of the number:** the first end-to-end run scored **9/18**. The 3B model
+declined 7 of the 12 answerable questions, even when the excerpt in front of it stated the answer.
+It was asked for `answerable: true/false` first, a snap judgement made before reading closely.
+Asking it first to name the excerpt that answers the question (`answeredBy`) raised that to 15–16/18.
+I also tried making it quote the answering sentence word for word, so code could verify the quote
+against the excerpt. The 3B model wrote the excerpt number instead of a quote every time, and scored
+6/18. That check is worth having with a stronger model; see PROCESS.md.
+
+With 18 questions, one question is 5–6 points, so treat these as directions rather than precise scores.
+I wrote the questions myself, after the articles, so they are easier than real tickets.
+
 ## API
 
 There is no login. The acting agent is named by an `X-Agent-Id` header (an agent id from
 `GET /api/agents`). Reads work without it; every write needs it.
 
-| Method | Path                       | What it does                                                                                                                       |
-| ------ | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/agents`              | All agents, for the agent picker                                                                                                   |
-| `GET`  | `/api/tickets`             | List tickets, newest first. Query: `status=open\|closed`, `owner=unassigned\|me\|<agentId>`, `limit=1..100` (default 25), `cursor` |
-| `GET`  | `/api/tickets/:id`         | One ticket with its owner and messages                                                                                             |
-| `POST` | `/api/tickets/:id/claim`   | Become the owner                                                                                                                   |
-| `POST` | `/api/tickets/:id/release` | Owner gives the ticket back to the queue                                                                                           |
-| `POST` | `/api/tickets/:id/reply`   | Owner replies. Body: `{ "body": "..." }`                                                                                           |
-| `POST` | `/api/tickets/:id/close`   | Owner closes the ticket                                                                                                            |
-| `POST` | `/webhooks/tickets`        | Signed intake from the website form                                                                                                |
-| `GET`  | `/health`                  | Liveness, including a database round trip                                                                                          |
-| `GET`  | `/ws`                      | WebSocket for live events and presence (protocol in [`packages/shared/src/realtime.ts`](packages/shared/src/realtime.ts))          |
+| Method | Path                          | What it does                                                                                                                       |
+| ------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/agents`                 | All agents, for the agent picker                                                                                                   |
+| `GET`  | `/api/tickets`                | List tickets, newest first. Query: `status=open\|closed`, `owner=unassigned\|me\|<agentId>`, `limit=1..100` (default 25), `cursor` |
+| `GET`  | `/api/tickets/:id`            | One ticket with its owner and messages                                                                                             |
+| `POST` | `/api/tickets/:id/claim`      | Become the owner                                                                                                                   |
+| `POST` | `/api/tickets/:id/release`    | Owner gives the ticket back to the queue                                                                                           |
+| `POST` | `/api/tickets/:id/reply`      | Owner replies. Body: `{ "body": "..." }`                                                                                           |
+| `POST` | `/api/tickets/:id/close`      | Owner closes the ticket                                                                                                            |
+| `POST` | `/webhooks/tickets`           | Signed intake from the website form                                                                                                |
+| `GET`  | `/health`                     | Liveness, including a database round trip                                                                                          |
+| `GET`  | `/api/tickets/:id/suggestion` | Suggested reply (`?refresh=true` drafts a new one). 503 if the model server is down                                                |
+| `GET`  | `/ws`                         | WebSocket for live events and presence (protocol in [`packages/shared/src/realtime.ts`](packages/shared/src/realtime.ts))          |
 
 Lists return `{ "data": [...], "nextCursor": "1017" | null }`. Pass `nextCursor` back as `cursor` for the
 next page. Pagination is keyset on the ticket number rather than OFFSET, so tickets arriving while you page
@@ -235,6 +324,7 @@ length of its transaction, so the owner can't change between the check and the i
   Closed tickets keep their owner, which records who closed them.
 - A double click on claim by the current owner is a success, not a conflict.
 - Every agent can see every ticket, so live events go to every connected agent.
+- Sending a reply stores it on the ticket. Delivering it to the customer by email is out of scope.
 - If you re-seed while the app is open, reload the page: a re-seed rewrites the data underneath the
   event log rather than through it.
 
@@ -245,13 +335,17 @@ apps/api/src
   app.ts              Express app (createApp is shared by the server and the tests)
   tickets/            list / read / claim / release / reply / close
   realtime/           event log, LISTEN/NOTIFY relay, WebSocket hub (live events, catch-up, presence)
+  ai/                 Embedder and ChatModel interfaces; Ollama and Claude implementations
+  retrieval/          chunking, incremental ingest, nearest-chunk search
+  suggestions/        prompt, drafting and its checks, caching, the suggestion endpoint
   webhooks/           signature check and idempotent intake
   articles/sync.ts    loads content/articles into the database, changed files only
   db/                 Drizzle schema and client; SQL migrations in apps/api/drizzle
   http/               error shape, validation, X-Agent-Id
 apps/api/seed         seed agents and tickets
 apps/api/scripts      migrate, seed, send-test-ticket
-apps/api/test         Vitest suites (real HTTP, real WebSockets, real Postgres)
+apps/api/eval         the 18 evaluation questions (pnpm eval)
+apps/api/test         Vitest suites (real HTTP, real WebSockets, real Postgres; fake models)
 apps/web/src
   live/               socket (reconnects), ticket store (newest version wins), queue views, hooks
   components/         inbox layout, queue, ticket view, composer, status pieces

@@ -14,6 +14,17 @@ const Env = z
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
+    OLLAMA_URL: z.url().default('http://localhost:11434'),
+    EMBED_MODEL: z.string().min(1).default('nomic-embed-text'),
+    OLLAMA_CHAT_MODEL: z.string().min(1).default('qwen2.5:3b'),
+    // Optional. When set, Claude drafts the replies instead of the local model.
+    ANTHROPIC_API_KEY: z
+      .string()
+      .optional()
+      .transform((key) => key?.trim() || undefined),
+    CLAUDE_MODEL: z.string().min(1).default('claude-opus-5-5'),
+    SUGGESTION_MIN_SIMILARITY: z.coerce.number().min(0).max(1).default(0.65),
+    HELP_CENTER_URL: z.url().default('https://help.slotwise.example/articles'),
   })
   .refine((env) => env.NODE_ENV !== 'production' || env.WEBHOOK_SECRET !== DEV_WEBHOOK_SECRET, {
     message: 'Set a real WEBHOOK_SECRET in production',
@@ -26,6 +37,15 @@ export interface Config {
   databaseUrl: string;
   logLevel: string;
   webhook: { secret: string; toleranceSeconds: number };
+  ai: {
+    ollamaUrl: string;
+    embedModel: string;
+    ollamaChatModel: string;
+    anthropicApiKey: string | undefined;
+    claudeModel: string;
+    minSimilarity: number;
+    helpCenterUrl: string;
+  };
 }
 
 /** Reads `.env` at the repo root if there is one. Real environment variables win. */
@@ -44,5 +64,14 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     databaseUrl: env.DATABASE_URL,
     logLevel: env.LOG_LEVEL,
     webhook: { secret: env.WEBHOOK_SECRET, toleranceSeconds: env.WEBHOOK_TOLERANCE_SECONDS },
+    ai: {
+      ollamaUrl: env.OLLAMA_URL.replace(/\/$/, ''),
+      embedModel: env.EMBED_MODEL,
+      ollamaChatModel: env.OLLAMA_CHAT_MODEL,
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+      claudeModel: env.CLAUDE_MODEL,
+      minSimilarity: env.SUGGESTION_MIN_SIMILARITY,
+      helpCenterUrl: env.HELP_CENTER_URL.replace(/\/$/, ''),
+    },
   };
 }

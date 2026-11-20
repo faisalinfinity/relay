@@ -16,7 +16,9 @@ try {
   await db.transaction(async (tx) => {
     // Ticket numbers restart at 1001. The event seq keeps counting, so a running API's relay
     // (which remembers the last seq it delivered) carries on delivering new events.
-    await tx.execute(sql`truncate table ticket_events, messages, tickets, agents`);
+    await tx.execute(
+      sql`truncate table ticket_suggestions, ticket_events, messages, tickets, agents`,
+    );
     await tx.execute(sql`alter table tickets alter column number restart with 1001`);
 
     const agentRows = await tx

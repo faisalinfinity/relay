@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useId, useRef, useState, type Ref } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from 'react';
+import { withSuggestion } from '../lib/compose';
 import { useLive } from '../live/LiveProvider';
 import { useReply } from '../live/hooks';
 
@@ -32,6 +41,12 @@ function useTypingSignal(ticketId: string) {
   return { ping, stop };
 }
 
+/** What the ticket view can do with the reply box: focus it, or put a suggestion into it. */
+export interface ComposerHandle {
+  focus(): void;
+  insert(text: string): void;
+}
+
 export function Composer({
   ticketId,
   customerName,
@@ -39,9 +54,25 @@ export function Composer({
 }: {
   ticketId: string;
   customerName: string;
-  ref?: Ref<HTMLTextAreaElement>;
+  ref?: Ref<ComposerHandle>;
 }) {
   const [text, setText] = useState('');
+  const textarea = useRef<HTMLTextAreaElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => textarea.current?.focus(),
+    insert: (suggestion) => {
+      setText((current) => withSuggestion(current, suggestion));
+      // Hand over to the agent: the draft is theirs to edit, and only Send sends it
+      requestAnimationFrame(() => {
+        const el = textarea.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+        el.scrollTop = el.scrollHeight;
+      });
+    },
+  }));
   const reply = useReply(ticketId);
   const typing = useTypingSignal(ticketId);
   const inputId = useId();
@@ -66,9 +97,9 @@ export function Composer({
       </label>
       <textarea
         id={inputId}
-        ref={ref}
+        ref={textarea}
         className="composer-input"
-        rows={5}
+        rows={8}
         value={text}
         aria-describedby={hintId}
         onChange={(event) => {

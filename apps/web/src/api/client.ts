@@ -3,6 +3,7 @@ import {
   type Agent,
   type DataResponse,
   type ReplyResult,
+  type Suggestion,
   type TicketDetail,
   type TicketPage,
   type TicketSummary,
@@ -74,6 +75,10 @@ export function createApi(agentId: string) {
     release: (id: string) => post<TicketSummary>(`/api/tickets/${id}/release`),
     close: (id: string) => post<TicketSummary>(`/api/tickets/${id}/close`),
     reply: (id: string, body: string) => post<ReplyResult>(`/api/tickets/${id}/reply`, { body }),
+    async getSuggestion(id: string, refresh = false): Promise<Suggestion> {
+      const path = `/api/tickets/${id}/suggestion${refresh ? '?refresh=true' : ''}`;
+      return (await request<DataResponse<Suggestion>>(path, { headers })).data;
+    },
   };
 }
 

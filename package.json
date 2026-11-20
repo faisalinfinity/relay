@@ -16,7 +16,10 @@
     "test": "pnpm -r --if-present test",
     "db:migrate": "pnpm --filter @relay/api db:migrate",
     "db:seed": "pnpm --filter @relay/api db:seed",
-    "send:ticket": "pnpm --filter @relay/api send:ticket"
+    "send:ticket": "pnpm --filter @relay/api send:ticket",
+    "ingest": "pnpm --filter @relay/api ingest",
+    "eval": "pnpm --filter @relay/api eval",
+    "models:pull": "pnpm --filter @relay/api models:pull"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

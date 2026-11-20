@@ -11,9 +11,13 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
-    "send:ticket": "tsx scripts/send-test-ticket.ts"
+    "send:ticket": "tsx scripts/send-test-ticket.ts",
+    "ingest": "tsx scripts/ingest.ts",
+    "eval": "tsx scripts/eval.ts",
+    "models:pull": "tsx scripts/pull-models.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
     "@relay/shared": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "express": "^5.3.0",
