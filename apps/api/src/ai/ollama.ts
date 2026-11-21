@@ -9,6 +9,12 @@ const NOMIC_PREFIXES = { document: 'search_document: ', query: 'search_query: ' 
 
 const EMBED_BATCH = 32;
 
+/**
+ * How long Ollama keeps a model in memory after a request. Its default is 5 minutes, and loading
+ * a model again can take far longer than drafting with it, so keep it warm through quiet spells.
+ */
+const KEEP_ALIVE = '1h';
+
 async function post<T>(
   baseUrl: string,
   path: string,
@@ -40,7 +46,19 @@ async function post<T>(
   return (await response.json()) as T;
 }
 
-export function ollamaEmbedder(baseUrl: string, model: string): Embedder {
+/** Ollama per-request options; `num_thread` caps the CPU threads it uses. */
+export interface OllamaOptions {
+  numThread?: number;
+}
+
+const runtimeOptions = ({ numThread }: OllamaOptions) =>
+  numThread === undefined ? {} : { num_thread: numThread };
+
+export function ollamaEmbedder(
+  baseUrl: string,
+  model: string,
+  options: OllamaOptions = {},
+): Embedder {
   const prefixes = model.startsWith('nomic-embed') ? NOMIC_PREFIXES : { document: '', query: '' };
 
   const embed = async (inputs: string[]): Promise<number[][]> => {
@@ -50,7 +68,7 @@ export function ollamaEmbedder(baseUrl: string, model: string): Embedder {
       const { embeddings } = await post<{ embeddings: number[][] }>(
         baseUrl,
         '/api/embed',
-        { model, input: batch },
+        { model, input: batch, options: runtimeOptions(options), keep_alive: KEEP_ALIVE },
         60_000,
       );
       vectors.push(...embeddings);
@@ -65,7 +83,7 @@ export function ollamaEmbedder(baseUrl: string, model: string): Embedder {
   };
 }
 
-export function ollamaChat(baseUrl: string, model: string): ChatModel {
+export function ollamaChat(baseUrl: string, model: string, options: OllamaOptions = {}): ChatModel {
   return {
     model,
     async generateJson(messages: ChatMessage[], jsonSchema: object) {
@@ -79,14 +97,27 @@ export function ollamaChat(baseUrl: string, model: string): ChatModel {
           // Ollama constrains the output to this JSON schema
           format: jsonSchema,
           // Low temperature: a support reply should be faithful to the articles, not creative
-          options: { temperature: 0.1 },
-          keep_alive: '30m',
+          options: { temperature: 0.1, ...runtimeOptions(options) },
+          keep_alive: KEEP_ALIVE,
         },
         180_000,
       );
       return message.content;
     },
   };
+}
+
+/** Loads a model into memory without generating anything, so the first real request is fast. */
+export async function warmModel(
+  baseUrl: string,
+  model: string,
+  kind: 'embed' | 'chat',
+  options: OllamaOptions = {},
+): Promise<void> {
+  const common = { model, keep_alive: KEEP_ALIVE, options: runtimeOptions(options) };
+  if (kind === 'embed')
+    await post(baseUrl, '/api/embed', { ...common, input: 'warm up' }, 10 * 60_000);
+  else await post(baseUrl, '/api/generate', { ...common, prompt: '' }, 10 * 60_000);
 }
 
 /** Asks Ollama to download a model if it doesn't have it yet. */

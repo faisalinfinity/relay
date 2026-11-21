@@ -1,117 +1,74 @@
 # Process notes
 
-Kept as I go. Cleaned up at the end, but the log stays as written.
+The full working log, one entry per decision or surprise, is in
+[docs/decision-log.md](docs/decision-log.md). This page is the summary.
 
 ## How I broke it down
 
-Plan, in the order I'm building it:
+In the order I built it, one branch per part:
 
-1. **Repo and tooling.** pnpm workspace, strict TypeScript, ESLint + Prettier, Postgres (pgvector image)
-   in Docker Compose.
-2. **API and the claim rule.** Schema, list/read/claim/release/reply/close, one error shape, the signed
-   intake webhook, seed data (25 articles, 30 tickets, 6 of them on purpose not covered by any article),
-   a test that really races two claims. CI goes in here too rather than at the end, so every push after
-   this point is checked.
-3. **Live inbox.** React UI, WebSocket events, presence and typing, optimistic claim with rollback,
-   catch-up after a reconnect.
-4. **Suggested replies.** Ingest articles into pgvector, retrieval with a cut-off, generation with
-   citations, a small evaluation.
-5. **Write-up.** This file, DESIGN.md, final README.
+1. **Repo and tooling.** pnpm workspace, strict TypeScript, lint, Postgres with pgvector in Docker.
+2. **API and the claim rule.** I built this first because everything else depends on ticket ownership
+   being right. CI went in here rather than at the end, so every later push was checked.
+3. **Live inbox.** The event log and WebSocket hub first, then the React UI on top of them.
+4. **Suggested replies.** Ingest, retrieval and drafting as separate functions, then the evaluation,
+   then the panel.
+5. **Write-up and one-command setup.**
 
 ## Decisions I went back and forth on
 
-_TBD_
+- **How to enforce one owner.** I chose one conditional `UPDATE … WHERE owner_id IS NULL` over
+  read-then-write or an advisory lock. The database's row lock is the mutex, and the rule holds across
+  any number of API instances.
+- **WebSocket or SSE.** I went with WebSocket because presence needs the browser to talk back, and a
+  closed socket is itself the "they left" signal.
+- **How the browser merges updates.** I started by patching each cached list on every event. I switched
+  to one store where the highest ticket `version` wins and queues are derived from it. A slow response
+  can no longer bring back an old owner.
+- **One similarity cut-off, or two gates.** I expected one threshold to separate answerable questions
+  from the rest. The evaluation showed the ranges overlap, so the cut-off only removes clearly unrelated
+  tickets, and the model judges whether the excerpts actually answer.
+- **Local model or Claude.** Local keeps the answer to "which keys do we need" at none. Claude is
+  optional, behind the same interface.
 
-## Prompts
+## Three prompts I used
 
-_TBD_
+_To fill in: three prompts copied exactly as written, each with one line on why._
 
 ## Where the AI was wrong
 
-_TBD_
+While building the live inbox, the AI wrote a test meant to show that events committed _while_ a
+reconnecting browser is catching up are neither lost nor duplicated. It passed, and it still passed
+when the code it was meant to protect was deleted. The "concurrent" events always finished after the
+replay, so the test never exercised the window it claimed to. That check (break the code, see whether
+the test notices) is how it was caught. The fix made the test deterministic by injecting the replay
+read, so it commits events just before and just after it. It now fails for each of three ways of
+breaking that code. The claim-race test got the same check: remove `owner_id IS NULL` and every race
+test fails.
 
-## Embeddings, chunk size, exact error codes
+## In my own words
 
-_TBD_
+**What an embedding model does that a chat model does not:** _to write._
 
-## Log
+**Why I chose this chunk size:** _to write._
 
-### Part 1: API and the claim rule
+**Why vector search alone would miss a ticket that quotes an exact error code:** _to write._
 
-- **Claim as one conditional UPDATE** (`WHERE owner_id IS NULL`), not read-then-write and not an
-  advisory lock. The row lock Postgres already takes for the UPDATE is the mutex. The losing request
-  then reads the row to explain _why_ it lost (closed, yours already, or someone else's), and that
-  becomes the 409 message.
-- **Making the race test actually race.** `Promise.all` over two fetches usually overlaps but proves
-  nothing. The test holds the ticket's row lock from another connection, waits until `pg_stat_activity`
-  shows every claim blocked on it, then lets them all go at once. To check the test itself, I removed
-  `owner_id IS NULL` and confirmed every race test fails.
-- **Bug found on the way:** the first version polled `pg_stat_activity` from inside the gate's own
-  transaction and timed out. Postgres snapshots `pg_stat_activity` once per transaction, so the poll
-  kept seeing the first (empty) answer. Polling moved to a separate autocommit connection.
-- **Keyset pagination on ticket number** instead of OFFSET: new tickets land at the top of a live
-  queue, and OFFSET would shift every later page. There's a test that inserts a ticket mid-walk.
-- **Webhook idempotency key = `submissionId` from the form**, enforced by a unique index, rather than a
-  hash of the body. Two genuinely separate submissions with the same text are still two tickets. The
-  body hash is kept only to catch the same id arriving with different content (409).
-- **Raw body for HMAC.** The webhook router is mounted before `express.json()` and uses `express.raw()`,
-  so the signature is checked over the exact bytes received.
-- **TypeScript pinned to 6.0.** TS 7 is `latest` on npm, but typescript-eslint supports `<6.1`.
+## Time and what I skipped
 
-### Part 2: the live inbox
+| Part                         | Time |
+| ---------------------------- | ---- |
+| Setup                        |      |
+| 1 API and the claim rule     |      |
+| 2 Live inbox                 |      |
+| 3 Suggested replies          |      |
+| 4 Pipeline, Docker, write-up |      |
 
-- **WebSocket over SSE**, because presence is browser-to-server and the socket closing _is_ the "they left"
-  signal. With SSE, typing would be extra POSTs, and I'd need to tie them back to a stream.
-- **Events in the same transaction as the change**, plus `pg_notify`, instead of emitting from the request
-  handler. An event exists if and only if the change committed, and LISTEN works across API instances
-  without adding Redis.
-- **Ordering the log.** A sequence hands out numbers at INSERT time, not commit time. Two transactions can
-  commit out of order, and a client resuming "after 11" would miss 10 forever. An advisory lock around the
-  event write makes seq order equal commit order. It serialises event writes, which is the trade-off for
-  DESIGN.md.
-- **Version, not arrival order, decides what the screen shows.** I first thought about patching each
-  cached list on every event. I went with one store of tickets where the highest `version` wins, and
-  queues derived from it. A slow REST response arriving after a live event can't bring back an old owner.
-- **Bug found by mutation testing:** my first "events arrive during catch-up" test passed even with the
-  catch-up buffer deleted. The concurrent submissions just happened to finish after the replay. I made it
-  deterministic by injecting the replay read, so events are committed right before and right after it.
-  The test now fails for each of three ways of breaking the buffer.
-- **Second bug, also from a test:** after `resetDb`, the event log is empty and reports head 0, and the
-  next event has a high seq, so a reconnect looked like a pruned gap and forced a full refetch. Production
-  would hit the same after pruning a quiet log. Pruning now always keeps the newest event.
-- **Sleep detection** uses a timer that notices it fired late, plus a server heartbeat. A sleeping
-  laptop's socket can look open for minutes otherwise.
+Skipped, roughly in the order I'd pick them up:
 
-### Part 3: suggested replies
-
-- **Models:** the brief allows any model, so I picked Ollama to keep "which keys do we need" at none.
-  `nomic-embed-text` for embeddings, `qwen2.5:3b` for drafting. Claude is optional for drafting when a
-  key is set. Both sit behind two small interfaces (`Embedder`, `ChatModel`), so the tests use fakes.
-- **One chunk per `##` section, with title and heading in front.** The articles are written as one
-  answer per section, so a section is the natural unit. A whole article blurs several answers into one
-  vector; single sentences lose the context ("click Reconnect" without "SW-1042").
-- **Incremental ingest by hashing what's embedded**, not the article file, so editing one section
-  re-embeds one chunk. The model name is part of the hash, so switching models re-embeds everything.
-- **The cut-off.** I expected a single similarity threshold to separate covered from uncovered
-  questions. The eval showed the ranges overlap (0.692 lowest covered, 0.737 highest uncovered).
-  "Bitcoin deposits" really is close to the deposits article. A relative score (best chunk vs. the
-  average chunk) overlapped too. So the cut-off only screens out the clearly unrelated (0.65), and the
-  model decides whether an on-topic excerpt actually answers the question.
-- **The change the number drove:** end to end, the local model first scored 9/18. It said "not
-  answerable" to 7 questions whose answer was in front of it. Asking it first to name the excerpt that
-  answers the question took it to 15–16/18.
-- **What didn't work:** I tried to make it quote the answering sentence so code could check the quote
-  against the excerpt. qwen2.5:3b wrote the excerpt number instead of a quote every time, even with an
-  explicit example and with a separate field for the number (6/18 both times). The quote check would be
-  the stronger guard; it needs a bigger model.
-- **Error codes:** probing tickets that contain only a code ("SW-1043") found the right article first
-  in 4 of 6, mostly because codes appear in section headings. "What is SW-5002" ranked the error-code
-  reference first. Not enough to justify keyword search yet; it's the first thing I'd add at scale.
-
-## Time log
-
-| Part         | Time | Notes |
-| ------------ | ---- | ----- |
-| Setup        |      |       |
-| 1 API        |      |       |
-| 2 Live inbox |      |       |
+- Shared presence across API instances (Redis), and drafting in a background job when a ticket arrives
+  (see DESIGN.md).
+- Keyword search alongside vectors for exact error codes.
+- Browser tests in CI. The two-agent flows were checked with Playwright scripts kept outside the repo.
+- Real login, sending replies by email, reopening closed tickets, rate limiting on the webhook.
+- A compiled production build; the container runs the TypeScript with `tsx`.

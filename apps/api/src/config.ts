@@ -17,6 +17,11 @@ const Env = z
     OLLAMA_URL: z.url().default('http://localhost:11434'),
     EMBED_MODEL: z.string().min(1).default('nomic-embed-text'),
     OLLAMA_CHAT_MODEL: z.string().min(1).default('qwen2.5:3b'),
+    // CPU threads Ollama uses per request; unset lets Ollama decide (see docker-compose.yml)
+    OLLAMA_NUM_THREAD: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.coerce.number().int().positive().optional(),
+    ),
     // Optional. When set, Claude drafts the replies instead of the local model.
     ANTHROPIC_API_KEY: z
       .string()
@@ -25,6 +30,8 @@ const Env = z
     CLAUDE_MODEL: z.string().min(1).default('claude-opus-5-5'),
     SUGGESTION_MIN_SIMILARITY: z.coerce.number().min(0).max(1).default(0.65),
     HELP_CENTER_URL: z.url().default('https://help.slotwise.example/articles'),
+    // Set in the Docker image: the API then also serves the built UI
+    WEB_DIST: z.string().min(1).optional(),
   })
   .refine((env) => env.NODE_ENV !== 'production' || env.WEBHOOK_SECRET !== DEV_WEBHOOK_SECRET, {
     message: 'Set a real WEBHOOK_SECRET in production',
@@ -36,11 +43,13 @@ export interface Config {
   port: number;
   databaseUrl: string;
   logLevel: string;
+  webDist: string | undefined;
   webhook: { secret: string; toleranceSeconds: number };
   ai: {
     ollamaUrl: string;
     embedModel: string;
     ollamaChatModel: string;
+    ollamaNumThread: number | undefined;
     anthropicApiKey: string | undefined;
     claudeModel: string;
     minSimilarity: number;
@@ -63,11 +72,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     port: env.PORT,
     databaseUrl: env.DATABASE_URL,
     logLevel: env.LOG_LEVEL,
+    webDist: env.WEB_DIST,
     webhook: { secret: env.WEBHOOK_SECRET, toleranceSeconds: env.WEBHOOK_TOLERANCE_SECONDS },
     ai: {
       ollamaUrl: env.OLLAMA_URL.replace(/\/$/, ''),
       embedModel: env.EMBED_MODEL,
       ollamaChatModel: env.OLLAMA_CHAT_MODEL,
+      ollamaNumThread: env.OLLAMA_NUM_THREAD,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       claudeModel: env.CLAUDE_MODEL,
       minSimilarity: env.SUGGESTION_MIN_SIMILARITY,

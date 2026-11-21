@@ -8,10 +8,11 @@ import { ollamaChat, ollamaEmbedder } from './ollama';
  * configured, and the local Ollama model otherwise, so Relay runs with no keys at all.
  */
 export function createModels(ai: Config['ai']): { embedder: Embedder; chat: ChatModel } {
+  const ollama = { numThread: ai.ollamaNumThread };
   return {
-    embedder: ollamaEmbedder(ai.ollamaUrl, ai.embedModel),
+    embedder: ollamaEmbedder(ai.ollamaUrl, ai.embedModel, ollama),
     chat: ai.anthropicApiKey
       ? claudeChat(ai.anthropicApiKey, ai.claudeModel)
-      : ollamaChat(ai.ollamaUrl, ai.ollamaChatModel),
+      : ollamaChat(ai.ollamaUrl, ai.ollamaChatModel, ollama),
   };
 }

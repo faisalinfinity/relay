@@ -7,8 +7,8 @@ centre articles.
 The product being supported is **Slotwise**, an invented booking and scheduling tool for small studios.
 Its help centre (25 articles) lives in [`content/articles`](content/articles).
 
-> **Status:** the API, the live inbox, suggested replies, seed data, tests and CI are done. The
-> one-command Docker setup is next.
+For reviewers: [DESIGN.md](DESIGN.md) covers scaling to 200 agents and 50,000 articles, and
+[PROCESS.md](PROCESS.md) covers how it was built.
 
 ## Stack
 
@@ -16,14 +16,45 @@ Its help centre (25 articles) lives in [`content/articles`](content/articles).
 - **API** ([`apps/api`](apps/api)): Node 22, Express 5, Drizzle ORM, Zod, pino, `ws` for WebSockets
 - **UI** ([`apps/web`](apps/web)): React 19, Vite, TanStack Query, plain CSS (no component library)
 - **Shared contracts** ([`packages/shared`](packages/shared)): Zod schemas and types used by both sides
-- **Database:** PostgreSQL 17 with pgvector, via Docker Compose
+- **Database:** PostgreSQL 17 with pgvector
 - **Models:** Ollama with `nomic-embed-text` (embeddings) and `qwen2.5:3b` (drafting); optionally Claude for drafting
 - **Tests:** Vitest against a real Postgres
 
-## Running it
+## Run it (one command)
+
+On a clean machine with only Docker:
+
+```bash
+docker compose up --build
+```
+
+Then open <http://localhost:8080> in two browser windows and pick a different agent in each. The agent is
+remembered per tab, so a reload keeps it.
+
+This starts Postgres (with pgvector), Ollama, and the app: the API serving the built UI on one origin.
+On every start the app migrates the database, seeds the demo data if the database is empty (4 agents,
+30 tickets, 25 help articles), makes sure the models are downloaded, and embeds any articles that
+changed. **The first start downloads about 2.3 GB of models** and takes a few minutes; later starts take
+seconds.
+
+- **How fast drafts are:** measured on a MacBook Air (Apple silicon), with the models warm. In Docker,
+  where Ollama runs on the CPU: 13–35 s per draft. With Ollama installed on the host (GPU), about 4 s;
+  to use it, run `DOCKER_OLLAMA_URL=http://host.docker.internal:11434 docker compose up --build`. With
+  Claude, a few seconds. Drafts are cached, so reopening a ticket is instant.
+- **Drafting with Claude:** put `ANTHROPIC_API_KEY=...` in a `.env` file next to `docker-compose.yml`.
+  Compose passes it to the app, and only the embedding model is downloaded.
+
+### Model keys
+
+**None required.** Embeddings and drafting both run locally on Ollama. Optionally, set
+`ANTHROPIC_API_KEY` and Claude (`claude-opus-5-5`) drafts the replies instead, with better judgement
+about what the articles do and don't answer. Embeddings stay on Ollama either way, because Anthropic has
+no embeddings API.
+
+## Develop
 
 You need Node 22, pnpm 9 (`corepack enable` gives you the right version), Docker, and
-[Ollama](https://ollama.com) for suggested replies.
+[Ollama](https://ollama.com) installed on the host.
 
 ```bash
 docker compose up -d db   # Postgres on localhost:5433
@@ -32,44 +63,41 @@ pnpm db:migrate
 pnpm db:seed              # 4 agents, 30 tickets, 25 help articles
 pnpm models:pull          # nomic-embed-text + qwen2.5:3b into Ollama (~2.3 GB, first time only)
 pnpm ingest               # chunk and embed the help articles into pgvector
-pnpm dev                  # UI on http://localhost:5173, API on http://localhost:4000
+pnpm dev                  # UI on http://localhost:5173 (hot reload), API on http://localhost:4000
 ```
 
-Open <http://localhost:5173> in two browser windows and pick a different agent in each. The agent is
-remembered per tab, so a reload keeps it.
-
-No `.env` file is needed for local development: every setting has a development default. See
-[`.env.example`](.env.example) to override them. Running `pnpm db:seed` again resets the tickets and agents.
-
-**Model keys: none required.** Embeddings and drafting both run locally on Ollama. Optionally, set
-`ANTHROPIC_API_KEY` in `.env` and Claude (`claude-opus-5-5`) drafts the replies instead, with better
-judgement about what the articles do and don't answer. Embeddings stay on Ollama either way, because
-Anthropic has no embeddings API.
+No `.env` file is needed for development: every setting has a default. See
+[`.env.example`](.env.example) to override them. `pnpm db:seed` resets the tickets and agents.
 
 ## Tests
 
 ```bash
-docker compose up -d db
+docker compose up -d db   # the tests need Postgres
+pnpm install
 pnpm test
 ```
 
 The tests create and migrate their own `relay_test` database on the same server, so they never touch your
-dev data. API tests run over real HTTP and real WebSockets against Postgres. UI tests cover the logic the
-live screen depends on (the ticket store, queue filtering, reconnect behaviour) without a browser. `pnpm typecheck`, `pnpm lint` and `pnpm format:check` run the other CI steps.
+data. API tests run over real HTTP and real WebSockets against Postgres, with fake models, so no Ollama
+or key is needed. UI tests cover the logic the live screen depends on (the ticket store, queue
+filtering, reconnect behaviour) without a browser. `pnpm typecheck`, `pnpm lint`, `pnpm format:check`
+and `pnpm build` run the other checks.
 
-The CI pipeline is [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It runs the same commands on
-every push, against a pgvector Postgres service container.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of those on every push against a
+pgvector Postgres service container, and builds the Docker image.
 
 ## Sending a test ticket
 
-With the API running:
+Against the Docker setup (the script runs inside the app container, with its webhook secret):
 
 ```bash
-pnpm send:ticket                   # a new signed ticket → 201
-pnpm send:ticket --twice           # same submission sent twice → 201, then 200 with duplicate: true
-pnpm send:ticket --bad-signature   # wrong secret → 401
-pnpm send:ticket --subject "SW-1042 again" --message "Calendar stopped syncing"
+docker compose exec app pnpm send:ticket                   # a new signed ticket → 201
+docker compose exec app pnpm send:ticket --twice           # same submission twice → 201, then 200 duplicate
+docker compose exec app pnpm send:ticket --bad-signature   # wrong secret → 401
+docker compose exec app pnpm send:ticket --subject "SW-1042 again" --message "Calendar stopped syncing"
 ```
+
+Against `pnpm dev`, run the same commands without `docker compose exec app`.
 
 The script signs the body with the same `WEBHOOK_SECRET` the API uses. See
 [`apps/api/scripts/send-test-ticket.ts`](apps/api/scripts/send-test-ticket.ts).
@@ -352,4 +380,6 @@ apps/web/src
 apps/web/test         unit tests for the store, queue filtering and reconnect logic
 packages/shared       request/response schemas, WebSocket protocol, error codes
 content/articles      the Slotwise help centre
+docs/decision-log.md  every decision and surprise, as it happened
+Dockerfile            one image: the API serving the built UI
 ```

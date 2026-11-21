@@ -28,7 +28,13 @@ const suggestions = createSuggestionService({
   helpCenterUrl: config.ai.helpCenterUrl,
 });
 
-const app = createApp({ db, webhook: config.webhook, suggestions, logger });
+const app = createApp({
+  db,
+  webhook: config.webhook,
+  suggestions,
+  logger,
+  webDist: config.webDist,
+});
 
 const server = app.listen(config.port, (error) => {
   if (error) {

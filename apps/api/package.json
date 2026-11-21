@@ -14,7 +14,8 @@
     "send:ticket": "tsx scripts/send-test-ticket.ts",
     "ingest": "tsx scripts/ingest.ts",
     "eval": "tsx scripts/eval.ts",
-    "models:pull": "tsx scripts/pull-models.ts"
+    "models:pull": "tsx scripts/pull-models.ts",
+    "bootstrap": "tsx scripts/bootstrap.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0",

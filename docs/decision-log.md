@@ -1,0 +1,93 @@
+# Decision log
+
+Kept while building, one entry per decision or surprise. [PROCESS.md](../PROCESS.md) is the one-page summary.
+
+## Part 1: API and the claim rule
+
+- **Claim as one conditional UPDATE** (`WHERE owner_id IS NULL`), not read-then-write and not an
+  advisory lock. The row lock Postgres already takes for the UPDATE is the mutex. The losing request
+  then reads the row to explain _why_ it lost (closed, yours already, or someone else's), and that
+  becomes the 409 message.
+- **Making the race test actually race.** `Promise.all` over two fetches usually overlaps but proves
+  nothing. The test holds the ticket's row lock from another connection, waits until `pg_stat_activity`
+  shows every claim blocked on it, then lets them all go at once. To check the test itself, I removed
+  `owner_id IS NULL` and confirmed every race test fails.
+- **Bug found on the way:** the first version polled `pg_stat_activity` from inside the gate's own
+  transaction and timed out. Postgres snapshots `pg_stat_activity` once per transaction, so the poll
+  kept seeing the first (empty) answer. Polling moved to a separate autocommit connection.
+- **Keyset pagination on ticket number** instead of OFFSET: new tickets land at the top of a live
+  queue, and OFFSET would shift every later page. There's a test that inserts a ticket mid-walk.
+- **Webhook idempotency key = `submissionId` from the form**, enforced by a unique index, rather than a
+  hash of the body. Two genuinely separate submissions with the same text are still two tickets. The
+  body hash is kept only to catch the same id arriving with different content (409).
+- **Raw body for HMAC.** The webhook router is mounted before `express.json()` and uses `express.raw()`,
+  so the signature is checked over the exact bytes received.
+- **TypeScript pinned to 6.0.** TS 7 is `latest` on npm, but typescript-eslint supports `<6.1`.
+
+## Part 2: the live inbox
+
+- **WebSocket over SSE**, because presence is browser-to-server and the socket closing _is_ the "they left"
+  signal. With SSE, typing would be extra POSTs, and I'd need to tie them back to a stream.
+- **Events in the same transaction as the change**, plus `pg_notify`, instead of emitting from the request
+  handler. An event exists if and only if the change committed, and LISTEN works across API instances
+  without adding Redis.
+- **Ordering the log.** A sequence hands out numbers at INSERT time, not commit time. Two transactions can
+  commit out of order, and a client resuming "after 11" would miss 10 forever. An advisory lock around the
+  event write makes seq order equal commit order. It serialises event writes, which is the trade-off for
+  DESIGN.md.
+- **Version, not arrival order, decides what the screen shows.** I first thought about patching each
+  cached list on every event. I went with one store of tickets where the highest `version` wins, and
+  queues derived from it. A slow REST response arriving after a live event can't bring back an old owner.
+- **Bug found by mutation testing:** my first "events arrive during catch-up" test passed even with the
+  catch-up buffer deleted. The concurrent submissions just happened to finish after the replay. I made it
+  deterministic by injecting the replay read, so events are committed right before and right after it.
+  The test now fails for each of three ways of breaking the buffer.
+- **Second bug, also from a test:** after `resetDb`, the event log is empty and reports head 0, and the
+  next event has a high seq, so a reconnect looked like a pruned gap and forced a full refetch. Production
+  would hit the same after pruning a quiet log. Pruning now always keeps the newest event.
+- **Sleep detection** uses a timer that notices it fired late, plus a server heartbeat. A sleeping
+  laptop's socket can look open for minutes otherwise.
+
+## Part 3: suggested replies
+
+- **Models:** the brief allows any model, so I picked Ollama to keep "which keys do we need" at none.
+  `nomic-embed-text` for embeddings, `qwen2.5:3b` for drafting. Claude is optional for drafting when a
+  key is set. Both sit behind two small interfaces (`Embedder`, `ChatModel`), so the tests use fakes.
+- **One chunk per `##` section, with title and heading in front.** The articles are written as one
+  answer per section, so a section is the natural unit. A whole article blurs several answers into one
+  vector; single sentences lose the context ("click Reconnect" without "SW-1042").
+- **Incremental ingest by hashing what's embedded**, not the article file, so editing one section
+  re-embeds one chunk. The model name is part of the hash, so switching models re-embeds everything.
+- **The cut-off.** I expected a single similarity threshold to separate covered from uncovered
+  questions. The eval showed the ranges overlap (0.692 lowest covered, 0.737 highest uncovered).
+  "Bitcoin deposits" really is close to the deposits article. A relative score (best chunk vs. the
+  average chunk) overlapped too. So the cut-off only screens out the clearly unrelated (0.65), and the
+  model decides whether an on-topic excerpt actually answers the question.
+- **The change the number drove:** end to end, the local model first scored 9/18. It said "not
+  answerable" to 7 questions whose answer was in front of it. Asking it first to name the excerpt that
+  answers the question took it to 15–16/18.
+- **What didn't work:** I tried to make it quote the answering sentence so code could check the quote
+  against the excerpt. qwen2.5:3b wrote the excerpt number instead of a quote every time, even with an
+  explicit example and with a separate field for the number (6/18 both times). The quote check would be
+  the stronger guard; it needs a bigger model.
+- **Error codes:** probing tickets that contain only a code ("SW-1043") found the right article first
+  in 4 of 6, mostly because codes appear in section headings. "What is SW-5002" ranked the error-code
+  reference first. Not enough to justify keyword search yet; it's the first thing I'd add at scale.
+
+## Part 4: one command, and the write-up
+
+- **One container for the app.** The API serves the built UI, so the browser talks to one origin and
+  `/ws` needs no proxy. A bootstrap step runs on every start: migrate, seed only if the database is
+  empty, pull models, ingest changed articles, load the models.
+- **Tested on a clean stack** (separate compose project, fresh volumes). The first start pulled the
+  models and was serving in ~3.3 minutes. Then the first suggestion timed out after 180 s.
+- **Why:** Ollama in Docker used all 10 CPUs the VM reports. On this Mac, 6 of those are efficiency
+  cores, and every step waited for them: 3 tokens/s. With 4 threads, 10.5 tokens/s; with 6, 13.4.
+  `OLLAMA_NUM_THREAD` is now configurable, and compose defaults it to 4. Drafts went from timing out
+  to 13–35 s.
+- **Model loading dominated the first draft** (~2 minutes after a thread change), and Ollama unloads
+  idle models after 5 minutes. Bootstrap now loads both models at startup, and requests keep them
+  loaded for an hour.
+- **Compose and `.env`:** compose substitutes variables from a project `.env`, so a copied
+  `.env.example` would have pointed the container at `localhost` for Ollama. Container overrides use
+  their own names (`DOCKER_OLLAMA_URL`).

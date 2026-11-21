@@ -58,3 +58,12 @@ jobs:
 
       - name: Build the UI
         run: pnpm build
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image docker compose runs
+        run: docker build --tag relay:ci .

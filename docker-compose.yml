@@ -1,3 +1,4 @@
+# `docker compose up --build` runs everything: open http://localhost:8080
 services:
   db:
     image: pgvector/pgvector:pg17
@@ -16,5 +17,39 @@ services:
       timeout: 3s
       retries: 30
 
+  # Local models for suggested replies; downloaded into the volume on first start
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ['CMD', 'ollama', 'list']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build: .
+    ports:
+      - '${APP_PORT:-8080}:8080'
+    environment:
+      DATABASE_URL: postgres://relay:relay@db:5432/relay
+      # Set DOCKER_OLLAMA_URL=http://host.docker.internal:11434 to use an Ollama installed on the
+      # host instead (much faster on a Mac, where Docker can't use the GPU)
+      OLLAMA_URL: ${DOCKER_OLLAMA_URL:-http://ollama:11434}
+      # Docker reports every core, and on Apple silicon half of them are slow efficiency cores that
+      # hold the rest back: 10 threads gave 3 tokens/s, 4 threads 10.5. Set it empty to let Ollama decide.
+      OLLAMA_NUM_THREAD: ${OLLAMA_NUM_THREAD-4}
+      # Optional: with a key (e.g. in .env), Claude drafts the replies
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # A demo secret; pnpm send:ticket inside this container uses the same one
+      WEBHOOK_SECRET: relay-demo-webhook-secret
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  ollama:
