@@ -1,120 +1,88 @@
 # Process notes
 
-The full working log, one entry per decision or surprise, is in
-[docs/decision-log.md](docs/decision-log.md). This page is the summary.
+A summary; every decision and surprise is in [docs/decision-log.md](docs/decision-log.md).
 
 ## How I broke it down
 
-In the order I built it, one branch per part:
-
-1. **Repo and tooling.** pnpm workspace, strict TypeScript, lint, Postgres with pgvector in Docker.
-2. **API and the claim rule.** First, because everything else depends on ticket ownership being right.
-   CI went in here rather than at the end, so every later push was checked.
-3. **Live inbox.** The event log and WebSocket hub first, then the React UI on top of them.
-4. **Suggested replies.** Ingest, retrieval and drafting as separate functions, then the evaluation,
-   then the panel.
-5. **Write-up and one-command setup.**
-
-Each part went in as one commit when it was done; the decision log is the step-by-step record.
+One branch per part, in this order: repo and tooling; the API and the claim rule, first because
+everything depends on ownership, with CI from then on; the live inbox, event log before UI; suggested
+replies, with search and drafting as separate functions, then the evaluation; the write-up and
+one-command setup. Each part went in as one commit. Before submitting I reworded those commit messages
+to say what each contains (content and dates unchanged); later fixes are separate commits.
 
 ## Decisions I went back and forth on
 
-- **One owner.** One conditional `UPDATE … WHERE owner_id IS NULL`, not read-then-write or an
-  advisory lock. The row lock is the mutex, and it holds across any number of API instances.
-- **WebSocket or SSE.** WebSocket, because presence needs the browser to talk back, and a closed
-  socket is itself the "they left" signal.
-- **Merging updates in the browser.** I first patched each cached list on every event, then switched
-  to one store where the highest ticket `version` wins and queues are derived from it. A slow response
-  can no longer bring back an old owner.
-- **One cut-off or two gates.** The evaluation showed that answerable and unanswerable questions
-  overlap in similarity, so the cut-off only drops clearly unrelated tickets, and the model judges
-  whether an excerpt actually answers.
+- **One owner:** a conditional `UPDATE … WHERE owner_id IS NULL`, not read-then-write. The row lock is
+  the mutex, across any number of API instances.
+- **Merging in the browser:** I first patched each cached list per event, then moved to one store
+  where the highest ticket `version` wins, so a slow response can't bring back an old owner.
+- **Saying "no article covers this":** similarity can't tell "on topic" from "answered", so the cut-off
+  only drops unrelated tickets; the model judges the rest, and code checks the help centre names what
+  was asked.
 
 ## Three prompts I used
 
-1. Drafted with the AI from my note, then run as written:
+My prompts were short notes; for these three the AI turned the note into a precise prompt, which I ran
+as written.
+
+1. My note: "is everything covered ac to assignment"
 
    > Before I submit, check main against the brief line by line. For every requirement (the four parts, the ground rules and "What to submit"), find where it is met: the file, the test that proves it, or the README section. Mark each met, partly met or missing, and for anything not fully met say what's missing and how long a fix would take. Don't trust the README's own claims: open the code or run the test. Don't change code; report.
 
-   Why: a check against the brief itself, not my memory of it. It confirmed the race test really
-   races and a resend makes one ticket, and flagged the weakest spot: the local 3B model still drafts
-   for some questions no article covers.
+   Why: check against the brief, not my memory of it. It found the weakest spot: the local model
+   still drafted for questions no article covers.
 
-2. Drafted with the AI from my note, then run as written:
+2. My note: "check main branch code if it will work perfectly on any one device"
 
    > Reviewers will run this on their own laptops, so check that main works from nothing. Clone main from GitHub into a new folder, build with no Docker cache and empty volumes, and run the exact README command. Time it until the log says "Relay API listening". Then use it like a reviewer: send test tickets with the README commands (new, resent, bad signature), open two browsers as two agents and check presence, typing, a live claim and the loser's 409, and get one suggestion for a covered ticket and one for an uncovered ticket. Report what happened, then clean up containers, volumes and the image.
 
-   Why: passing on my laptop isn't passing on a reviewer's. From a fresh clone it was ready in 2 min
-   45 s and every check passed, including a real simultaneous claim. It also caught one draft where
-   the small model leaked chat-template text (`}user assistant`) into the reply.
+   Why: my laptop isn't a reviewer's. Ready in 2 min 45 s from a fresh clone, every check passed, and
+   it caught a draft with leaked chat-template text.
 
-3. Drafted with the AI from my notes on the bug, then run as written:
+3. My note, on that audit finding: "fix"
 
-   > The suggested reply for ticket #1022 ("How do I refund someone") ends with "...then proceed with the refund as described in." The model wrote "as described in [1]", and finishReply in apps/api/src/suggestions/draft.ts deletes every [n] marker, so the sentence is left hanging. An agent who inserts the draft without reading it closely would send that to the customer.
-   >
-   > Fix it so that a marker which completes a phrase ("as described in [1]", "see [2]") is replaced with the title of the cited article in quotes, and any other marker is still removed. Look the title up by the excerpt number. Leave the article links at the end of the reply as they are.
-   >
-   > Write the test first with this exact refund sentence, run it and show me it fails, then make the change. The existing finishReply tests must keep passing.
-   >
-   > Two small setup fixes in the same change, because reviewers will run this on their own laptops:
-   >
-   > - pin ollama/ollama to 0.40.17 in docker-compose.yml, the version I tested from a clean clone
-   > - in the README's run section, say Docker needs about 4 GB of memory (the Ollama container used 2.8 GB), and to wait for "Relay API listening" in the log before opening the page
-   >
-   > Then run typecheck, lint, the tests and format:check.
+   > The local model still drafts confident replies for questions no article covers. "Can clients pay with crypto?" gets an answer from the deposits article, and the gift card and Zoom questions in the eval get drafts too. Make the draft step check that the excerpts actually mention what the customer is asking about, so those come back as "no article covers this", without losing any of the 12 answerable eval questions. Also, one cold-start draft leaked chat-template text ("}user assistant") mid-reply and rambled on: cut a draft off where that starts. Write failing tests first with these real examples, and run pnpm eval --generate before and after to prove it.
 
-   Why: I found the bug by running the Docker setup from a fresh clone, the way a reviewer would.
-   Giving the real example, the rule and a failing test first got a fix I could check, not a guess.
+   Why: Part 3's headline rule. End to end went from 15/18 to 18/18; the seed tickets reached 30/30.
 
 ## Where the AI was wrong
 
-While building the live inbox, the AI wrote a test meant to show that events committed _while_ a
-reconnecting browser catches up are neither lost nor duplicated. It passed, and it still passed with
-the code it protected deleted: the "concurrent" events always landed after the replay. I caught it by
-breaking the code on purpose to see whether the test noticed. The fix injects the replay read, so the
-test commits events just before and just after it; it now fails for each of three ways of breaking
-that code. The claim-race test got the same check: remove `owner_id IS NULL` and every race test fails.
+The AI wrote a test meant to prove that events committed _while_ a reconnecting browser catches up
+are neither lost nor duplicated. It still passed with that code deleted: the "concurrent" events always
+landed after the replay. I caught it by breaking the code on purpose. Injecting the replay read lets
+the test commit events just before and after it, and it now fails for each of three ways of breaking
+that code.
 
 ## In my own words
 
-**What an embedding model does that a chat model does not:** It turns text into a list of numbers
-(a vector) that stands for its meaning, so texts about the same thing land close together. That lets
-me measure which help sections are nearest to a ticket. It writes nothing. A chat model writes text
-but gives no such distance. So the embedding model finds the articles, and the chat model writes the
-reply from them.
+**What an embedding model does that a chat model does not:** It turns text into numbers (a vector)
+that stand for its meaning, so texts about the same thing land close together and I can measure which
+help sections are nearest a ticket. It writes nothing; a chat model writes but can't measure that. One
+finds the articles, the other writes the reply.
 
-**Why I chose this chunk size:** One chunk is one `##` section of an article, at most 220 words, with
-the article title and heading on top. Each section answers one question, so one chunk is one answer.
-Whole articles mix answers and match loosely; tiny pieces lose their context. The title and heading
-help short sections, like an error code, match. The 25 articles make 122 chunks.
+**Why I chose this chunk size:** One `##` section per chunk, at most 220 words, with the article title
+and heading on top. A section answers one question, so a chunk is one answer: whole articles mix
+answers and match loosely, tiny pieces lose context.
 
-**Why vector search alone would miss a ticket that quotes an exact error code:** Vector search
-compares meaning, not exact characters. To an embedding, SW-1042 and SW-1043 are nearly the same:
-both are "a Slotwise error code". So a ticket quoting one can get another code's section, or a page
-listing every code. In my evaluation, the SW-6029 question ranked the error-code list above the
-SW-6029 article. A keyword search alongside would catch the exact match.
+**Why vector search alone would miss a ticket that quotes an exact error code:** It compares meaning,
+not characters. SW-1042 and SW-1043 look nearly the same to an embedding, so a ticket can get another
+code's section or a page listing every code; in my evaluation, SW-6029 ranked the code list above its
+own article. Keyword search alongside catches the exact match.
 
 ## Time and what I skipped
 
-From my session timestamps: the start of each part to its commit, overnight breaks left out. Part 4
-includes the final checks and fixes.
+From session timestamps, start of each part to its commit, breaks left out. Part 3 includes the later
+fix for uncovered questions.
 
-| Part                         | Time            |
-| ---------------------------- | --------------- |
-| Setup                        | 0.25 h          |
-| 1 API and the claim rule     | 1 h             |
-| 2 Live inbox                 | 0.75 h          |
-| 3 Suggested replies          | 1 h             |
-| 4 Pipeline, Docker, write-up | 3.5 h           |
-| **Total**                    | **about 6.5 h** |
+| Part                         | Time          |
+| ---------------------------- | ------------- |
+| Setup                        | 0.25 h        |
+| 1 API and the claim rule     | 1 h           |
+| 2 Live inbox                 | 0.75 h        |
+| 3 Suggested replies          | 2 h           |
+| 4 Pipeline, Docker, write-up | 4 h           |
+| **Total**                    | **about 8 h** |
 
-Skipped, roughly in the order I'd pick them up:
-
-- Shared presence across API instances (Redis), and drafting in a background job when a ticket arrives
-  (see DESIGN.md).
-- A stronger "does this excerpt really answer it" check for the local model, which still drafts for 3
-  of the 6 uncovered evaluation questions.
-- Keyword search alongside vectors for exact error codes.
-- Browser tests in CI. The two-agent flows were checked with Playwright scripts kept outside the repo.
-- Real login, sending replies by email, reopening closed tickets, rate limiting on the webhook.
-- A compiled production build; the container runs the TypeScript with `tsx`.
+Skipped, in the order I'd pick them up: shared presence across instances and drafting in a background
+job (DESIGN.md); keyword search for exact error codes; browser tests in CI (the two-agent flows were
+checked with Playwright scripts outside the repo); real login, emailing replies and webhook rate limits.

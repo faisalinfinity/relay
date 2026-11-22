@@ -271,7 +271,7 @@ It was asked for `answerable: true/false` first, a snap judgement made before re
 Asking it first to name the excerpt that answers the question (`answeredBy`) raised that to 15–16/18.
 I also tried making it quote the answering sentence word for word, so code could verify the quote
 against the excerpt. The 3B model wrote the excerpt number instead of a quote every time, and scored
-6/18. That check is worth having with a stronger model; see PROCESS.md.
+6/18. That check is worth having with a stronger model.
 
 **The second change, from the same number:** 15/18 still drafted confidently for Zoom links, gift
 cards and crypto. Adding the `asksAbout` check took it to 17/18 but lost "Receptionist access", because
