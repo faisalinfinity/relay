@@ -48,7 +48,12 @@ export class FakeChat implements ChatModel {
   }
 }
 
-export const answer = (reply: string, citations: number[], answeredBy = citations[0] ?? 1) =>
-  JSON.stringify({ answeredBy, reply, citations });
+export const answer = (
+  reply: string,
+  citations: number[],
+  answeredBy = citations[0] ?? 1,
+  asksAbout: string[] = [],
+) => JSON.stringify({ asksAbout, answeredBy, reply, citations });
 
-export const decline = () => JSON.stringify({ answeredBy: 0, reply: '', citations: [] });
+export const decline = () =>
+  JSON.stringify({ asksAbout: [], answeredBy: 0, reply: '', citations: [] });

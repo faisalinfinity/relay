@@ -24,7 +24,8 @@ export type Draft =
   | { kind: 'declined' }
   /** the model said an excerpt answers it, but named one it was never given */
   | { kind: 'not_grounded' }
-  | { kind: 'drafted'; reply: string; cited: Source[] };
+  /** asksAbout: what the model says the customer asks about, for the help-centre check */
+  | { kind: 'drafted'; reply: string; cited: Source[]; asksAbout: string[] };
 
 /** The text that gets embedded and searched with. */
 export function questionText(question: TicketQuestion): string {
@@ -36,8 +37,9 @@ const SYSTEM_PROMPT = `You draft replies for the support team of Slotwise, onlin
 Write the reply only from the numbered help-centre excerpts in the message. They are your only source: don't add steps, settings, prices, time frames or features that aren't in them, and don't promise anything on Slotwise's behalf.
 
 Work in this order:
-1. "answeredBy": the number of the excerpt that answers the customer's main question, or 0 if none of them does. An excerpt about the same topic that doesn't answer the actual question doesn't count: if they ask for something the excerpts never mention, the answer is 0.
-2. "reply": if an excerpt answers it, the reply to the customer; otherwise leave it empty and an agent will handle it. If the excerpts answer the main question but not every detail, answer what they cover and say a teammate will follow up on the rest.
+1. "asksAbout": the specific things the customer asks about, as 1 to 3 short terms in their own words: the feature, product, payment method, integration or service they name (for example "Outlook calendar", "deposits" or "custom domain"). Leave out people, job titles and general words like booking, account or settings.
+2. "answeredBy": the number of the excerpt that answers the customer's main question, or 0 if none of them does. An excerpt about the same topic that doesn't answer the actual question doesn't count: if they ask for something the excerpts never mention, the answer is 0.
+3. "reply": if an excerpt answers it, the reply to the customer; otherwise leave it empty and an agent will handle it. If the excerpts answer the main question but not every detail, answer what they cover and say a teammate will follow up on the rest.
 
 When you write the reply:
 - Greet the customer by first name. Keep it short and friendly, with the steps they need.
@@ -48,22 +50,38 @@ When you write the reply:
 /** The JSON shape the model must answer in. Ollama and Claude both constrain output to it. */
 export const DRAFT_JSON_SCHEMA = {
   type: 'object',
-  // Property order matters: models write fields in this order, so the model commits to which
-  // excerpt answers the question before it writes anything
+  // Property order matters: models write fields in this order, so the model names what was asked
+  // and commits to which excerpt answers it before it writes anything
   properties: {
+    asksAbout: { type: 'array', items: { type: 'string' } },
     answeredBy: { type: 'integer' },
     reply: { type: 'string' },
     citations: { type: 'array', items: { type: 'integer' } },
   },
-  required: ['answeredBy', 'reply', 'citations'],
+  required: ['asksAbout', 'answeredBy', 'reply', 'citations'],
   additionalProperties: false,
 } as const;
 
 const DraftOutput = z.object({
+  asksAbout: z.array(z.string()).default([]),
   answeredBy: z.number().int(),
   reply: z.string(),
   citations: z.array(z.number().int()),
 });
+
+/**
+ * Small models sometimes run past the end of their turn inside the JSON string: a stray "}" or a
+ * chat-template token, then "user" or "assistant", then text nobody asked for. Seen with
+ * qwen2.5:3b as "}user" and "assistant", each followed by combining marks, then "Guam, thank you…".
+ */
+const LEAKED_TURN =
+  /<\|[a-z_]{2,20}\|>|\}\s*(?:user|assistant|system)\b|\b(?:user|assistant|system)[\u0300-\u036f\ufe0f]/i;
+
+/** Drops everything from the first sign of a leaked turn. */
+export function cutAtLeakedTurn(reply: string): string {
+  const at = reply.search(LEAKED_TURN);
+  return (at === -1 ? reply : reply.slice(0, at)).trim();
+}
 
 export function buildDraftPrompt(question: TicketQuestion, sources: Source[]): ChatMessage[] {
   const firstName = question.customerName.split(/\s+/)[0] ?? question.customerName;
@@ -97,14 +115,15 @@ export async function draftReply(
   if (!parsed.success) {
     throw new ModelOutputError('The model answered in an unexpected format. Try regenerating.');
   }
-  const { answeredBy, reply, citations } = parsed.data;
-  if (answeredBy === 0 || reply.trim() === '') return { kind: 'declined' };
+  const { asksAbout, answeredBy, citations } = parsed.data;
+  const reply = cutAtLeakedTurn(parsed.data.reply);
+  if (answeredBy === 0 || reply === '') return { kind: 'declined' };
   // It must point at an excerpt it was actually given
   if (!sources.some((s) => s.index === answeredBy)) return { kind: 'not_grounded' };
 
   const inline = [...reply.matchAll(/\[(\d+)\]/g)].map((match) => Number(match[1]));
   const cited = sources.filter((s) => citations.includes(s.index) || inline.includes(s.index));
-  return { kind: 'drafted', reply: reply.trim(), cited };
+  return { kind: 'drafted', reply, cited, asksAbout };
 }
 
 /**

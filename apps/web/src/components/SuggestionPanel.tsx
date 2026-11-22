@@ -1,17 +1,10 @@
 import type { Suggestion } from '@relay/shared';
 import { useEffect, useEffectEvent, useId } from 'react';
 import { ApiError } from '../api/client';
+import { noCoverageHint } from '../lib/coverage';
 import { isPlainKey, isTypingTarget } from '../lib/keys';
 import { useSuggestion } from '../live/hooks';
 import { Spinner } from './Status';
-
-const NO_COVERAGE: Record<Extract<Suggestion, { status: 'no_coverage' }>['reason'], string> = {
-  no_relevant_articles:
-    'Nothing in the help centre is close enough to this question, so no draft was written.',
-  model_declined: "The closest articles are about something similar, but they don't answer this.",
-  not_grounded:
-    "A draft was written, but it wasn't backed by the articles it was given, so it was discarded.",
-};
 
 /**
  * A reply drafted from the help centre, with the articles it came from. Inserting it only fills
@@ -114,7 +107,7 @@ export function SuggestionPanel({
       ) : suggestion ? (
         <>
           <p className="suggestion-none">No help article covers this.</p>
-          <p className="hint">{NO_COVERAGE[suggestion.reason]}</p>
+          <p className="hint">{noCoverageHint(suggestion)}</p>
           <Retrieved suggestion={suggestion} />
         </>
       ) : null}

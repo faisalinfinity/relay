@@ -201,11 +201,13 @@ can reply.
    messages are embedded, and the 6 nearest chunks are fetched by cosine distance. Chunks with similarity
    below the cut-off are dropped.
 3. **Generation step** ([`draftReply`](apps/api/src/suggestions/draft.ts)). Up to 4 relevant chunks go
-   to the chat model as numbered excerpts. The model must answer in a JSON schema: `answeredBy` (the
-   excerpt that answers the main question, or 0), `reply`, and `citations`. The code checks the answer.
-   `answeredBy` must name an excerpt the model was actually given, and citations of excerpts it wasn't
-   given are dropped. The `[n]` markers are then replaced with links to the cited articles at the end of
-   the reply.
+   to the chat model as numbered excerpts. The model must answer in a JSON schema: `asksAbout` (the
+   specific things the customer asks about), `answeredBy` (the excerpt that answers the main question,
+   or 0), `reply`, and `citations`. The code checks the answer. `answeredBy` must name an excerpt the
+   model was actually given, citations of excerpts it wasn't given are dropped, and `asksAbout` is
+   checked against the help centre (below). If the model runs past the end of its turn and leaks
+   chat-template text (`}user assistant…`), the reply is cut off there. The `[n]` markers are then
+   replaced with links to the cited articles at the end of the reply.
 
 The two steps are separate functions with separate tests, and both run on fakes in CI (no model server).
 Drafts are cached per ticket until the question, the retrieved chunks or the models change. Regenerate
@@ -213,11 +215,20 @@ asks for a new one.
 
 ### When no article covers it
 
-The panel says "No help article covers this" in three cases, and shows which:
+The panel says "No help article covers this" in four cases, and shows which:
 
 - **Nothing clears the similarity cut-off.** The chat model is never asked.
 - **The model says none of the excerpts answers the question** (`answeredBy: 0`).
 - **The model names an excerpt it wasn't given.** The draft is discarded.
+- **The model drafts anyway, but no article mentions what the customer asked about.** Embeddings match
+  on topic, so "pay my deposit in Bitcoin" lands on the deposits article and a small model happily
+  drafts from it. So each `asksAbout` term that the customer actually wrote is looked up in every
+  article with Postgres full-text search ([`retrieval/mentions.ts`](apps/api/src/retrieval/mentions.ts)).
+  If no article names it, the draft is discarded and the panel says which term ("No article mentions
+  “Bitcoin”"). One exception: a term close in meaning to an excerpt the model was given (similarity
+  ≥ 0.60) still counts, because the customer's word for something isn't always the help centre's. No
+  article says "receptionist", but the "Front desk" role answers that question (0.639; the
+  uncovered terms score 0.48–0.57).
 
 Every suggestion also lists the chunks the search found, with their similarity, and whether each was used.
 
@@ -248,9 +259,11 @@ questions with the configured chat model.
   Both misses are near-misses. "Receptionist access" ranked the refunds article first, because the
   question mentions refunds. "SW-6029" ranked the error-code reference first, because it lists every
   code.
-- **End to end with qwen2.5:3b:** **15/18**. All 12 answerable questions get a draft citing the expected
-  article. 3 of the 6 uncovered questions correctly get "no article covers this"; Zoom links, gift
-  cards and crypto still got drafts.
+- **End to end with qwen2.5:3b:** **18/18**, on two runs. All 12 answerable questions get a draft citing
+  the expected article, and all 6 uncovered ones get "no article covers this".
+- **The 30 seed tickets**, which I didn't use to choose any setting: **30/30**. All 24 covered tickets
+  get a draft and all 6 uncovered ones don't. They did catch one problem first (below), so after that
+  fix they are no longer a fully independent check.
 
 **The change I made because of the number:** the first end-to-end run scored **9/18**. The 3B model
 declined 7 of the 12 answerable questions, even when the excerpt in front of it stated the answer.
@@ -259,6 +272,12 @@ Asking it first to name the excerpt that answers the question (`answeredBy`) rai
 I also tried making it quote the answering sentence word for word, so code could verify the quote
 against the excerpt. The 3B model wrote the excerpt number instead of a quote every time, and scored
 6/18. That check is worth having with a stronger model; see PROCESS.md.
+
+**The second change, from the same number:** 15/18 still drafted confidently for Zoom links, gift
+cards and crypto. Adding the `asksAbout` check took it to 17/18 but lost "Receptionist access", because
+no article says "receptionist"; the meaning fallback brought it back to 18/18. The seed tickets then
+showed two drafts discarded because the model listed "integration", a word neither customer used, so
+only terms in the customer's own words are checked.
 
 With 18 questions, one question is 5–6 points, so treat these as directions rather than precise scores.
 I wrote the questions myself, after the articles, so they are easier than real tickets.

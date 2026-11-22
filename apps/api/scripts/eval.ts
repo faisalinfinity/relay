@@ -14,6 +14,7 @@ import { createModels } from '../src/ai';
 import { loadConfig } from '../src/config';
 import { createDb } from '../src/db/client';
 import { articleChunks } from '../src/db/schema';
+import { uncoveredTerms } from '../src/retrieval/mentions';
 import { retrieve, type ChunkHit } from '../src/retrieval/search';
 import {
   draftReply,
@@ -142,9 +143,20 @@ try {
               : 'no article (draft discarded: named an excerpt it was not given)';
           ok = expect === null;
         } else {
+          // The same check the suggestion service makes before it shows a draft
+          const missing = await uncoveredTerms(db, embedder, {
+            terms: draft.asksAbout,
+            question: questionText(question),
+            excerptHashes: relevant.slice(0, 4).map((hit) => hit.contentHash),
+          });
           const cited = [...new Set(draft.cited.map((s) => s.slug))];
-          outcome = `drafted, cites ${cited.join(', ') || 'nothing'}`;
-          ok = expect !== null && cited.includes(expect);
+          if (missing.length > 0) {
+            outcome = `no article (draft discarded: no article mentions ${missing.map((m) => `"${m}"`).join(', ')}; asks about: ${draft.asksAbout.join(', ')})`;
+            ok = expect === null;
+          } else {
+            outcome = `drafted, cites ${cited.join(', ') || 'nothing'} (asks about: ${draft.asksAbout.join(', ')})`;
+            ok = expect !== null && cited.includes(expect);
+          }
         }
       }
       if (ok) right++;

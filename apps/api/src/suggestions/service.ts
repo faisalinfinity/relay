@@ -5,6 +5,7 @@ import type { ChatModel, Embedder } from '../ai/models';
 import type { Db } from '../db/client';
 import { messages, tickets, ticketSuggestions } from '../db/schema';
 import { AppError } from '../http/errors';
+import { TERM_MIN_SIMILARITY, uncoveredTerms } from '../retrieval/mentions';
 import { retrieve, type ChunkHit } from '../retrieval/search';
 import { draftReply, finishReply, questionText, type Source, type TicketQuestion } from './draft';
 
@@ -19,10 +20,15 @@ export interface SuggestionDeps {
   /** how many chunks to search for, and how many relevant ones the model gets */
   searchLimit?: number;
   maxSources?: number;
+  /**
+   * a term no article names still counts as covered when it is at least this similar to one of
+   * the excerpts the model was given (see TERM_MIN_SIMILARITY)
+   */
+  termMinSimilarity?: number;
 }
 
 /** Bump when the prompt changes, so cached drafts from the old prompt aren't reused. */
-const PROMPT_VERSION = 5;
+const PROMPT_VERSION = 6;
 
 export type SuggestionService = ReturnType<typeof createSuggestionService>;
 
@@ -89,9 +95,14 @@ export function createSuggestionService(deps: SuggestionDeps) {
 
     let pending = inFlight.get(inputHash);
     if (!pending) {
-      pending = draftAndStore(ticketId, inputHash, question, sources, base).finally(() =>
-        inFlight.delete(inputHash),
-      );
+      pending = draftAndStore(
+        ticketId,
+        inputHash,
+        question,
+        sources,
+        used.map((hit) => hit.contentHash),
+        base,
+      ).finally(() => inFlight.delete(inputHash));
       inFlight.set(inputHash, pending);
     }
     return pending;
@@ -102,9 +113,20 @@ export function createSuggestionService(deps: SuggestionDeps) {
     inputHash: string,
     question: TicketQuestion,
     sources: Source[],
+    excerptHashes: string[],
     base: Pick<Suggestion, 'retrieved' | 'models'>,
   ): Promise<Suggestion> {
     const draft = await draftReply(chat, question, sources);
+    // The model can draft from an article on the same topic that never mentions what was asked
+    const missing =
+      draft.kind === 'drafted'
+        ? await uncoveredTerms(db, embedder, {
+            terms: draft.asksAbout,
+            question: questionText(question),
+            excerptHashes,
+            minSimilarity: deps.termMinSimilarity ?? TERM_MIN_SIMILARITY,
+          })
+        : [];
     const createdAt = new Date().toISOString();
     const suggestion: Suggestion =
       draft.kind === 'declined' || draft.kind === 'not_grounded'
@@ -114,17 +136,19 @@ export function createSuggestionService(deps: SuggestionDeps) {
             reason: draft.kind === 'declined' ? 'model_declined' : 'not_grounded',
             createdAt,
           }
-        : {
-            ...base,
-            status: 'drafted',
-            reply: finishReply(draft.reply, draft.cited),
-            sources: [...new Map(draft.cited.map((s) => [s.slug, s])).values()].map((s) => ({
-              slug: s.slug,
-              title: s.title,
-              url: s.url,
-            })),
-            createdAt,
-          };
+        : missing.length > 0
+          ? { ...base, status: 'no_coverage', reason: 'not_in_help_centre', missing, createdAt }
+          : {
+              ...base,
+              status: 'drafted',
+              reply: finishReply(draft.reply, draft.cited),
+              sources: [...new Map(draft.cited.map((s) => [s.slug, s])).values()].map((s) => ({
+                slug: s.slug,
+                title: s.title,
+                url: s.url,
+              })),
+              createdAt,
+            };
 
     await db
       .insert(ticketSuggestions)

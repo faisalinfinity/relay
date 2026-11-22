@@ -52,7 +52,9 @@ PgBouncer in transaction mode.
 4. **Ingest as a job, never at startup**: process only articles whose file hash changed (the hash is
    already stored), in batches, with progress.
 5. **Hybrid retrieval**: Postgres full-text or trigram search alongside the vector search, merged with
-   reciprocal-rank fusion, plus an exact-match boost for error codes. Store vectors as `halfvec` to halve
+   reciprocal-rank fusion, plus an exact-match boost for error codes. The "does any article mention it" check
+   already uses full-text search, but computes each article's `tsvector` per query: at 50,000 articles it
+   needs a stored `tsvector` column with a GIN index. Store vectors as `halfvec` to halve
    memory. Add filters (product area, locale) as the corpus grows.
 6. **Measure before scaling further**: socket count per instance, event lag (commit to delivery), draft
    latency and queue depth, and the hit rate from `pnpm eval` on every retrieval change.

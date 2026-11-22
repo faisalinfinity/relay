@@ -59,6 +59,34 @@ describe('draftReply', () => {
       kind: 'drafted',
       reply: 'Hi Maya! Click Reconnect [1].',
       cited: sources,
+      asksAbout: [],
+    });
+  });
+
+  it('passes on what the model says the customer asks about, for the help-centre check', async () => {
+    const chat = new FakeChat(() =>
+      answer('Hi Maya! Deposits are paid by card [1].', [1], 1, ['Bitcoin']),
+    );
+    const draft = await draftReply(chat, question, sources);
+
+    expect(draft).toMatchObject({ kind: 'drafted', asksAbout: ['Bitcoin'] });
+  });
+
+  it('cuts a draft off where leaked chat-template text starts', async () => {
+    // A real qwen2.5:3b draft from the Docker cold start: after "}user assistant" it rambled on
+    const leaked =
+      'Hello Maya, To resolve this, go to Settings → Calendar and click Reconnect [1]. ' +
+      "I'll follow up with you if you don't see the changes within a few minutes. " +
+      // the exact bytes: U+0333 and U+FE0F after each role name
+      '}user\u0333\uFE0Fassistant\u0333\uFE0F Guam, thank you for your patience. In the meantime, ' +
+      'you can manually add your upcoming bookings to your Google Calendar.';
+    const draft = await draftReply(new FakeChat(() => answer(leaked, [1])), question, sources);
+
+    expect(draft).toMatchObject({
+      kind: 'drafted',
+      reply:
+        'Hello Maya, To resolve this, go to Settings → Calendar and click Reconnect [1]. ' +
+        "I'll follow up with you if you don't see the changes within a few minutes.",
     });
   });
 

@@ -36,6 +36,9 @@ export type Suggestion =
        * model_declined: there were articles, but the model said they don't answer the question.
        * not_grounded: the model said an excerpt answers it but named one it was never given,
        *   so Relay discarded the draft.
+       * not_in_help_centre: the model drafted a reply, but no article mentions what the customer
+       *   asked about (listed in `missing`), so Relay discarded the draft.
        */
-      reason: 'no_relevant_articles' | 'model_declined' | 'not_grounded';
+      reason: 'no_relevant_articles' | 'model_declined' | 'not_grounded' | 'not_in_help_centre';
+      missing?: string[];
     });

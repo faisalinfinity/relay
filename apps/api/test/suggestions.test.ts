@@ -2,8 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ModelUnavailableError } from '../src/ai/models';
 import type { ArticleFile } from '../src/articles/sync';
-import type { TicketRow } from '../src/db/schema';
+import { articleChunks, type TicketRow } from '../src/db/schema';
 import { ingestArticles } from '../src/retrieval/ingest';
+import { uncoveredTerms } from '../src/retrieval/mentions';
 import { answer, decline, FakeChat, FakeEmbedder } from './fakes';
 import { call, createTicket, resetDb, startTestServer, type TestServer } from './helpers';
 
@@ -103,6 +104,43 @@ describe('GET /api/tickets/:id/suggestion', () => {
     expect(res.body.data).toMatchObject({ status: 'no_coverage', reason: 'model_declined' });
   });
 
+  it('discards a confident draft when no article mentions what the customer asked about', async () => {
+    // What qwen2.5:3b did with "Can my clients pay their deposit in Bitcoin?": it drafted anyway
+    const bitcoin = await createTicket(server.db, {
+      subject: 'Google calendar connection expired SW-1042, and can clients pay in Bitcoin?',
+    });
+    chat.respond = () =>
+      answer('Hi Priya! Yes, deposits can be paid online [1].', [1], 1, ['Bitcoin']);
+    const res = await suggest(bitcoin.id);
+
+    expect(res.body.data).toMatchObject({
+      status: 'no_coverage',
+      reason: 'not_in_help_centre',
+      missing: ['Bitcoin'],
+    });
+  });
+
+  it('ignores a term the customer never used, so a word the model made up discards nothing', async () => {
+    // qwen2.5:3b listed "integration" for an Outlook ticket that never says it
+    chat.respond = () =>
+      answer('Hi Priya! Open Settings and click Reconnect [1].', [1], 1, ['integration']);
+    const res = await suggest();
+
+    expect(res.body.data).toMatchObject({ status: 'drafted' });
+  });
+
+  it('keeps the draft when the help centre mentions every term, ignoring words that carry none', async () => {
+    // "Google Calendar" is in the article (stemmed match); "the" is a stop word, so it can't count
+    chat.respond = () =>
+      answer('Hi Priya! Open Settings and click Reconnect [1].', [1], 1, [
+        'Google Calendars',
+        'the',
+      ]);
+    const res = await suggest();
+
+    expect(res.body.data).toMatchObject({ status: 'drafted' });
+  });
+
   it('reuses the last draft until asked to regenerate', async () => {
     const first = await suggest();
     const second = await suggest();
@@ -152,5 +190,37 @@ describe('GET /api/tickets/:id/suggestion', () => {
     const res = await suggest(randomUUID());
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('TICKET_NOT_FOUND');
+  });
+});
+
+describe('uncoveredTerms', () => {
+  const excerpts = async () =>
+    (await server.db.select({ hash: articleChunks.contentHash }).from(articleChunks)).map(
+      (row) => row.hash,
+    );
+
+  it('flags a term the customer used that no article names and nothing given is close to', async () => {
+    const check = {
+      question: 'Calendar broken. Can clients pay in Bitcoin?',
+      excerptHashes: await excerpts(),
+    };
+    expect(
+      await uncoveredTerms(server.db, embedder, { ...check, terms: ['Bitcoin', 'calendar'] }),
+    ).toEqual(['Bitcoin']);
+    // the customer never wrote "Zoom", so the model can't hold the help centre to it
+    expect(await uncoveredTerms(server.db, embedder, { ...check, terms: ['Zoom'] })).toEqual([]);
+  });
+
+  it('lets a term no article names count when it is close in meaning to an excerpt', async () => {
+    // No article says "wizard", so the name check misses it; the meaning check decides
+    const check = {
+      terms: ['Reconnect wizard'],
+      question: 'Where is the Reconnect wizard?',
+      excerptHashes: await excerpts(),
+    };
+    expect(await uncoveredTerms(server.db, embedder, { ...check, minSimilarity: 0.1 })).toEqual([]);
+    expect(await uncoveredTerms(server.db, embedder, { ...check, minSimilarity: 0.6 })).toEqual([
+      'Reconnect wizard',
+    ]);
   });
 });
