@@ -103,6 +103,29 @@ describe('finishReply', () => {
     );
   });
 
+  it('names the article when a marker finishes the sentence, so it is not left hanging', () => {
+    // A real qwen2.5:3b draft: removing the marker used to leave "...as described in."
+    const refunds = [source(1, 'refunding-a-client', 'Refunding a client')];
+    const reply = finishReply(
+      'Hi Hannah, Cancelling a booking does not automatically refund the deposit. Please cancel the ' +
+        'booking and then proceed with the refund as described in [1]. ' +
+        "I'll follow up with you for any further details.",
+      refunds,
+    );
+
+    expect(reply.split('\n\n')[0]).toBe(
+      'Hi Hannah, Cancelling a booking does not automatically refund the deposit. Please cancel the ' +
+        'booking and then proceed with the refund as described in "Refunding a client". ' +
+        "I'll follow up with you for any further details.",
+    );
+  });
+
+  it('names every article in a run of markers after "see", once each', () => {
+    expect(finishReply('For the steps, see [1][2][1].', sources).split('\n\n')[0]).toBe(
+      'For the steps, see "Calendar sync troubleshooting" and "Connecting Google Calendar".',
+    );
+  });
+
   it('takes out Markdown emphasis copied from the articles', () => {
     expect(finishReply('Go to **Settings → Calendar** and click __Reconnect__ [1].', [])).toBe(
       'Go to Settings → Calendar and click Reconnect.',

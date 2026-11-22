@@ -108,12 +108,29 @@ export async function draftReply(
 }
 
 /**
+ * A marker right after one of these words finishes the sentence ("as described in [1]", "see [2]"),
+ * so taking it out would leave the sentence hanging.
+ */
+const ENDS_WANTING_A_NAME = /\b(?:in|see|to|from|per|under|on|at|of|via)$/i;
+
+/**
  * Turns the draft into what the customer would read: the [n] markers and Markdown emphasis come
- * out, and links to the cited articles go at the end, one per article.
+ * out, and links to the cited articles go at the end, one per article. A marker that finishes a
+ * sentence is replaced with the article's title instead.
  */
 export function finishReply(reply: string, cited: Source[]): string {
+  const titles = new Map(cited.map((s) => [s.index, s.title]));
   const body = reply
-    .replace(/[ \t]*\[\d+\]/g, '')
+    .replace(
+      /[ \t]*((?:\[\d+\])+)/g,
+      (_match: string, run: string, offset: number, all: string) => {
+        if (!ENDS_WANTING_A_NAME.test(all.slice(0, offset))) return '';
+        const named = new Set(
+          [...run.matchAll(/\d+/g)].flatMap((m) => titles.get(Number(m[0])) ?? []),
+        );
+        return named.size === 0 ? '' : ` ${[...named].map((title) => `"${title}"`).join(' and ')}`;
+      },
+    )
     // The articles use Markdown emphasis; a reply to a customer is plain text
     .replace(/(\*\*|__)(.+?)\1/g, '$2')
     .trim();

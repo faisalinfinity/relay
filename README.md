@@ -35,7 +35,10 @@ This starts Postgres (with pgvector), Ollama, and the app: the API serving the b
 On every start the app migrates the database, seeds the demo data if the database is empty (4 agents,
 30 tickets, 25 help articles), makes sure the models are downloaded, and embeds any articles that
 changed. **The first start downloads about 2.3 GB of models** and takes a few minutes; later starts take
-seconds.
+seconds. The app is ready when the log shows `Relay API listening`.
+
+Docker needs about **4 GB of memory**: the Ollama container alone uses about 2.8 GB with both models
+loaded. Docker Desktop's default (half your RAM) is enough on an 8 GB laptop.
 
 - **How fast drafts are:** measured on a MacBook Air (Apple silicon), with the models warm. In Docker,
   where Ollama runs on the CPU: 13–35 s per draft. With Ollama installed on the host (GPU), about 4 s;

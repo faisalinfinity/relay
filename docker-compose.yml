@@ -19,7 +19,8 @@ services:
 
   # Local models for suggested replies; downloaded into the volume on first start
   ollama:
-    image: ollama/ollama:latest
+    # Pinned: the version tested with a cold start from a fresh clone
+    image: ollama/ollama:0.40.17
     volumes:
       - ollama:/root/.ollama
     healthcheck:
