@@ -32,16 +32,21 @@ Each part went in as one commit when it was done; the decision log is the step-b
 
 ## Three prompts I used
 
-1. My first message was the whole brief, pasted in, ending with:
+1. Drafted with the AI from my note, then run as written:
 
-   > divide everything in phase and first complete phase 1 and I will commit and push not you.
+   > Before I submit, check main against the brief line by line. For every requirement (the four parts, the ground rules and "What to submit"), find where it is met: the file, the test that proves it, or the README section. Mark each met, partly met or missing, and for anything not fully met say what's missing and how long a fix would take. Don't trust the README's own claims: open the code or run the test. Don't change code; report.
 
-   Why: the brief was the context, and I reviewed and committed each part before the next started.
+   Why: a check against the brief itself, not my memory of it. It confirmed the race test really
+   races and a resend makes one ticket, and flagged the weakest spot: the local 3B model still drafts
+   for some questions no article covers.
 
-2. > i have api keys as well if assignment permits , claude?
+2. Drafted with the AI from my note, then run as written:
 
-   Why: the brief asks which keys you'd need, if any. The default is none (local Ollama); Claude is
-   optional behind the same interface.
+   > Reviewers will run this on their own laptops, so check that main works from nothing. Clone main from GitHub into a new folder, build with no Docker cache and empty volumes, and run the exact README command. Time it until the log says "Relay API listening". Then use it like a reviewer: send test tickets with the README commands (new, resent, bad signature), open two browsers as two agents and check presence, typing, a live claim and the loser's 409, and get one suggestion for a covered ticket and one for an uncovered ticket. Report what happened, then clean up containers, volumes and the image.
+
+   Why: passing on my laptop isn't passing on a reviewer's. From a fresh clone it was ready in 2 min
+   45 s and every check passed, including a real simultaneous claim. It also caught one draft where
+   the small model leaked chat-template text (`}user assistant`) into the reply.
 
 3. Drafted with the AI from my notes on the bug, then run as written:
 
@@ -94,19 +99,21 @@ SW-6029 article. A keyword search alongside would catch the exact match.
 From my session timestamps: the start of each part to its commit, overnight breaks left out. Part 4
 includes the final checks and fixes.
 
-| Part                         | Time          |
-| ---------------------------- | ------------- |
-| Setup                        | 0.25 h        |
-| 1 API and the claim rule     | 1 h           |
-| 2 Live inbox                 | 0.75 h        |
-| 3 Suggested replies          | 1 h           |
-| 4 Pipeline, Docker, write-up | 3 h           |
-| **Total**                    | **about 6 h** |
+| Part                         | Time            |
+| ---------------------------- | --------------- |
+| Setup                        | 0.25 h          |
+| 1 API and the claim rule     | 1 h             |
+| 2 Live inbox                 | 0.75 h          |
+| 3 Suggested replies          | 1 h             |
+| 4 Pipeline, Docker, write-up | 3.5 h           |
+| **Total**                    | **about 6.5 h** |
 
 Skipped, roughly in the order I'd pick them up:
 
 - Shared presence across API instances (Redis), and drafting in a background job when a ticket arrives
   (see DESIGN.md).
+- A stronger "does this excerpt really answer it" check for the local model, which still drafts for 3
+  of the 6 uncovered evaluation questions.
 - Keyword search alongside vectors for exact error codes.
 - Browser tests in CI. The two-agent flows were checked with Playwright scripts kept outside the repo.
 - Real login, sending replies by email, reopening closed tickets, rate limiting on the webhook.
