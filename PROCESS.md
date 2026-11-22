@@ -25,14 +25,14 @@ to say what each contains (content and dates unchanged); later fixes are separat
 My prompts were short notes; for these three the AI turned the note into a precise prompt, which I ran
 as written.
 
-1. My note: "is everything covered ac to assignment"
+1. My note: "is everything covered ac to requirement?"
 
    > Before I submit, check main against the brief line by line. For every requirement (the four parts, the ground rules and "What to submit"), find where it is met: the file, the test that proves it, or the README section. Mark each met, partly met or missing, and for anything not fully met say what's missing and how long a fix would take. Don't trust the README's own claims: open the code or run the test. Don't change code; report.
 
    Why: check against the brief, not my memory of it. It found the weakest spot: the local model
    still drafted for questions no article covers.
 
-2. My note: "check main branch code if it will work perfectly on any one device"
+2. My note: "Check main branch code if it will work perfectly on any one's device"
 
    > Reviewers will run this on their own laptops, so check that main works from nothing. Clone main from GitHub into a new folder, build with no Docker cache and empty volumes, and run the exact README command. Time it until the log says "Relay API listening". Then use it like a reviewer: send test tickets with the README commands (new, resent, bad signature), open two browsers as two agents and check presence, typing, a live claim and the loser's 409, and get one suggestion for a covered ticket and one for an uncovered ticket. Report what happened, then clean up containers, volumes and the image.
 
